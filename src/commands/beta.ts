@@ -28,6 +28,8 @@ export interface BetaOptions {
   platform?: Platform;
   dry: boolean;
   skipChecks: boolean;
+  /** Dry runs only: build this ref instead of origin/main, to test a branch before it lands. */
+  ref?: string;
 }
 
 const WHAT_TO_TEST_LIMIT = 2000;
@@ -38,6 +40,7 @@ export async function beta(config: ShipConfig, options: BetaOptions) {
   for (const platform of requested) {
     if (!config[platform]) throw new Error(`ship.json has no ${platform} section`);
   }
+  if (options.ref && !options.dry) throw new Error("--ref only works with --dry-run; real builds ship origin/main");
   await assertRepoRoot(config.root);
   const unlock = lock(config);
   try {
@@ -71,7 +74,7 @@ async function runBeta(config: ShipConfig, requested: Platform[], options: BetaO
   const now = new Date();
   const build = buildNumberFor(now);
   const versionCode = versionCodeFor(now);
-  const commit = await git(config.root, "rev-parse", "origin/main");
+  const commit = await git(config.root, "rev-parse", options.ref ?? "origin/main");
   log(
     `beta ${config.name} ${version} build ${build}${platforms.includes("android") ? ` (Android ${versionCode})` : ""} from ${commit.slice(0, 7)}${dry ? " [dry run]" : ""}`,
   );

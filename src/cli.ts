@@ -7,7 +7,7 @@ import { errorMessage } from "./log.ts";
 
 const USAGE = `ship: one release tool for every native app
 
-  ship beta [ios|android] [--dry-run] [--skip-checks]   build main, upload to TestFlight / Play internal
+  ship beta [ios|android] [--dry-run [--ref R]] [--skip-checks] build main, upload to TestFlight / Play internal
   ship release [ios|android] [--dry-run]                 send the newest beta to App Review / Play production
   ship version [patch|minor|major] [--dry-run]           print the version, or bump it on main
   ship nightly [--dry-run]                               release every nightly app and keep betas alive
@@ -22,6 +22,7 @@ const { values, positionals } = parseArgs({
   options: {
     "dry-run": { type: "boolean", default: false },
     "skip-checks": { type: "boolean", default: false },
+    ref: { type: "string" },
     C: { type: "string", short: "C" },
     help: { type: "boolean", short: "h", default: false },
   },
@@ -48,7 +49,12 @@ async function main() {
   switch (command) {
     case "beta": {
       const { beta } = await import("./commands/beta.ts");
-      return beta(loadConfig(root), { platform: platformArg(), dry, skipChecks: values["skip-checks"] });
+      return beta(loadConfig(root), {
+        platform: platformArg(),
+        dry,
+        skipChecks: values["skip-checks"],
+        ref: values.ref,
+      });
     }
     case "release": {
       const { release } = await import("./commands/release.ts");
