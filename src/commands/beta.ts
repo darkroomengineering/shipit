@@ -19,7 +19,7 @@ import {
   tagBuild,
   withWorktree,
 } from "../git.ts";
-import { errorMessage, log, run, write } from "../log.ts";
+import { errorMessage, log, run, warn, write } from "../log.ts";
 import { GENERIC_NOTES, notesSince } from "../notes.ts";
 import { buildNumberFor, uploadInternal, versionCodeFor } from "../playlane.ts";
 import { distribute } from "../testflight.ts";
@@ -150,11 +150,18 @@ async function runBeta(config: ShipConfig, requested: Platform[], options: BetaO
       }
 
       // The tag maps the build to its commit, for release notes.
-      await write(dry, `tagging v${version}-${build} and pushing the tag`, async () => {
+      // A tag failure never blocks distribution: the build is already uploaded and testers should get it.
+      const tag = `v${version}-${build}`;
+      await write(dry, `tagging ${tag} and pushing the tag`, async () => {
         if (!shipped) return;
         const names = platforms.filter((platform) => (platform === "ios" ? iosUploaded : true)).join(" + ");
-        await tagBuild(config, `v${version}-${build}`, commit, `${config.name} ${version} build ${build} (${names})`);
-        log(`tagged v${version}-${build}`);
+        try {
+          await tagBuild(config, tag, commit, `${config.name} ${version} build ${build} (${names})`);
+          log(`tagged ${tag}`);
+        } catch (error) {
+          warn(`uploaded build ${build} but could not tag ${tag}: ${errorMessage(error)}`);
+          failures.push(`tag ${tag}: ${errorMessage(error)}`);
+        }
       });
 
       if (ios && asc && appId && iosBuilt && ios.externalGroups.length) {

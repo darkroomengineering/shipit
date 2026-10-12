@@ -160,7 +160,14 @@ export async function pushVersion(config: ShipConfig, next: string) {
 
 export async function tagBuild(config: ShipConfig, tag: string, commit: string, message: string) {
   await git(config.root, "-c", "tag.gpgsign=false", "tag", "-a", tag, commit, "-m", message);
-  if (await hasRemote(config.root)) await git(config.root, "push", "-q", "origin", tag);
+  if (!(await hasRemote(config.root))) return;
+  try {
+    await git(config.root, "push", "-q", "origin", tag);
+  } catch (error) {
+    // A local tag that never reached GitHub would pass for a pushed one on the next run.
+    await git(config.root, "tag", "-d", tag).catch(() => undefined);
+    throw error;
+  }
 }
 
 /** The nearest build tag (v<version>-<build>) at or before `commit`, the start of its release-note range. */
