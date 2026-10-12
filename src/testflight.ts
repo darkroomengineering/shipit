@@ -130,9 +130,14 @@ async function expireOlderInReview(asc: Asc, appId: string, id: string, build: s
   return expired;
 }
 
-/** Newest build's upload date, for keepAlive: TestFlight expires builds 90 days after upload. */
+/**
+ * Upload date of the newest build testers can still install (processed and not expired), for keepAlive:
+ * TestFlight expires builds 90 days after upload, and a failed upload keeps nothing alive.
+ */
 export async function lastUpload(asc: Asc, appId: string): Promise<Date | undefined> {
-  const [build] = await asc.list(`/builds?filter[app]=${appId}&sort=-uploadedDate&limit=1&fields[builds]=uploadedDate`);
+  const [build] = await asc.list(
+    `/builds?filter[app]=${appId}&filter[processingState]=VALID&filter[expired]=false&sort=-uploadedDate&limit=1&fields[builds]=uploadedDate`,
+  );
   const date = attr(build, "uploadedDate");
   return date ? new Date(date) : undefined;
 }

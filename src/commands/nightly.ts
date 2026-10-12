@@ -22,11 +22,11 @@ async function keepAlive(config: ShipConfig, dry: boolean): Promise<boolean> {
   const uploaded = await lastUpload(asc, app.id);
   const age = uploaded ? Math.floor((Date.now() - uploaded.getTime()) / DAY) : Number.POSITIVE_INFINITY;
   if (age < days) {
-    log(`${config.name}: newest TestFlight upload is ${age}d old, under ${days}d`);
+    log(`${config.name}: newest usable TestFlight build is ${age}d old, under ${days}d`);
     return false;
   }
   log(
-    `${config.name}: newest TestFlight upload is ${Number.isFinite(age) ? `${age}d` : "missing"}, re-uploading to keep TestFlight alive`,
+    `${config.name}: newest usable TestFlight build is ${Number.isFinite(age) ? `${age}d` : "missing"}, re-uploading to keep TestFlight alive`,
   );
   if (dry) {
     log(`${config.name}: dry run: skipped the keep-alive beta`);
