@@ -22,7 +22,7 @@ Run `ship` from the app's folder (where `ship.json` lives, which is also the git
 | Beta | TestFlight, external groups, Beta App Review | Play internal track | `ship beta` |
 | Release | App Review (App Store) | Play production | `ship release` |
 
-**Beta.** `ship beta` always builds from a clean worktree of `origin/main`, so uncommitted work never ships. It:
+**Beta.** `ship beta` always builds from a clean worktree of `origin/main`, so uncommitted work never ships. A repository with no `origin` remote builds its local `main` and pushes nothing (tags and version bumps stay local). It:
 
 1. Fetches `main` and reads the version.
 2. Asks App Store Connect whether that version is still open. Once App Review approves a version it takes no more builds, so the patch number is bumped and `chore: start version X` is pushed to `main`. A new version builds every platform.
@@ -35,7 +35,7 @@ Run `ship` from the app's folder (where `ship.json` lives, which is also the git
 
 **Version.** `ship version` prints the version on `main`. `ship version patch|minor|major` commits and pushes the bump. Patch bumps after an approval happen on their own during `ship beta`.
 
-**Dry runs.** `--dry-run` on `beta` archives and exports locally (export, not upload) and prints every write it skipped: the upload, the tag, the push, and every App Store Connect or Play change. The App Store Connect and Play clients refuse writes in a dry run, so it cannot upload by accident. The export lands in `~/Library/Caches/shipit/<app>/build-<number>/`.
+**Dry runs.** `--dry-run` on `beta` archives and exports locally (export, not upload) and prints every write it skipped: the upload, the tag, the push, and every App Store Connect or Play change. The App Store Connect and Play clients refuse writes in a dry run, so it cannot upload by accident. The export lands in `~/Library/Caches/shipit/<app>/build-<number>/`. Add `--ref <branch>` to a dry run to build a branch before it lands on `main`; real builds refuse it.
 
 ## ship.json
 
