@@ -125,6 +125,15 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean) {
     await withdraw(asc, app.id, current.id, version, state);
     say(`withdrew ${version} build ${attr(attached ?? undefined, "version") ?? "?"} from review`);
   }
+  // A rejection leaves its submission in UNRESOLVED_ISSUES holding the version. It is cancelled so the fresh
+  // submission below is the only one that carries the version.
+  // SHORTCUT: assumes App Store Connect refuses a second submission for a version an unresolved one still holds.
+  // ceiling: unverified against Apple's reviewSubmissions docs. upgrade: resolve the rejected item and resubmit the
+  // same submission if cancelling it is refused.
+  if (current && (state === "REJECTED" || state === "METADATA_REJECTED")) {
+    const canceled = await cancelHolding(asc, app.id, current.id, ["UNRESOLVED_ISSUES"]);
+    if (canceled) say(`cancelled ${canceled} unresolved review submission(s) holding ${version}`);
+  }
   const target =
     current ??
     (
@@ -156,13 +165,10 @@ async function readListing(config: ShipConfig, file: string | null | undefined):
   return parsed as Listing;
 }
 
-/**
- * Withdraws the review submission that holds this version, which makes the version editable again. Other
- * submissions for the app (In-App Events, say) are separate and stay in review.
- */
-async function withdraw(asc: Asc, appId: string, versionId: string, version: string, state: string) {
+/** Cancels the review submissions in `states` whose items include this version, and returns how many. */
+async function cancelHolding(asc: Asc, appId: string, versionId: string, states: string[]): Promise<number> {
   const open = await asc.list(
-    `/reviewSubmissions?filter[app]=${appId}&filter[platform]=IOS&filter[state]=WAITING_FOR_REVIEW,IN_REVIEW,UNRESOLVED_ISSUES`,
+    `/reviewSubmissions?filter[app]=${appId}&filter[platform]=IOS&filter[state]=${states.join(",")}`,
   );
   let canceled = 0;
   for (const submission of open) {
@@ -173,6 +179,15 @@ async function withdraw(asc: Asc, appId: string, versionId: string, version: str
     });
     canceled++;
   }
+  return canceled;
+}
+
+/**
+ * Withdraws the review submission that holds this version, which makes the version editable again. Other
+ * submissions for the app (In-App Events, say) are separate and stay in review.
+ */
+async function withdraw(asc: Asc, appId: string, versionId: string, version: string, state: string) {
+  const canceled = await cancelHolding(asc, appId, versionId, ["WAITING_FOR_REVIEW", "IN_REVIEW", "UNRESOLVED_ISSUES"]);
   if (!canceled) throw new Error(`${version} is ${state}, but no active review submission holds it`);
   let now = state;
   for (let i = 0; i < 40 && now !== "DEVELOPER_REJECTED" && now !== "PREPARE_FOR_SUBMISSION"; i++) {
