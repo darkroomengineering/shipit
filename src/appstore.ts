@@ -223,6 +223,13 @@ async function submit(
       attributes: { whatsNew, description: listing.description, keywords: listing.keywords },
     },
   });
+  // App Review requires whatsNew on every localization; notes someone wrote by hand in another locale are kept.
+  for (const localization of localizations) {
+    if (localization.id === en.id || attr(localization, "whatsNew")) continue;
+    await asc.patch(`/appStoreVersionLocalizations/${localization.id}`, {
+      data: { type: "appStoreVersionLocalizations", id: localization.id, attributes: { whatsNew } },
+    });
+  }
   log(`ios: attached build ${attr(build, "version")} and release notes to ${version}`);
 
   // Resume the draft that already holds this version (left by a run that failed partway); otherwise open a new
