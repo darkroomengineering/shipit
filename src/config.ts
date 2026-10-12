@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
@@ -60,10 +61,11 @@ export function resolvePath(root: string, path: string): string {
   return isAbsolute(expanded) ? expanded : resolve(root, expanded);
 }
 
+/** Names an app's cache folder and lock. The path hash keeps `foo_bar` and `foo-bar`, or two checkouts of one app, apart. */
 export const slug = (config: ShipConfig) =>
-  basename(config.root)
+  `${basename(config.root)
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-");
+    .replace(/[^a-z0-9]+/g, "-")}-${createHash("sha256").update(config.root).digest("hex").slice(0, 8)}`;
 
 type Raw = Record<string, unknown>;
 const isObject = (value: unknown): value is Raw => typeof value === "object" && value !== null && !Array.isArray(value);

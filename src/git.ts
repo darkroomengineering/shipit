@@ -77,6 +77,17 @@ interface WorktreeOptions {
   persistent?: boolean;
 }
 
+/** Whether `dir` is a worktree of the repository at `root`, so a cached one is never reused for another repository. */
+async function belongsTo(dir: string, root: string): Promise<boolean> {
+  if (!existsSync(join(dir, ".git"))) return false;
+  try {
+    const common = (cwd: string) => git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    return realpathSync(await common(dir)) === realpathSync(await common(root));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Runs `work` in a clean worktree of `ref`. Uncommitted changes in the working copy never reach it; gitignored
  * files only arrive through the `copy` lists.
@@ -90,10 +101,11 @@ export async function withWorktree<T>(
   const { root } = config;
   if (options.persistent) {
     const dir = join(homedir(), "Library", "Caches", "shipit", slug(config), "worktree");
-    if (existsSync(join(dir, ".git"))) {
+    if (await belongsTo(dir, root)) {
       await git(dir, "checkout", "-q", "-f", "--detach", ref);
       await git(dir, "clean", "-fdq");
     } else {
+      rmSync(dir, { recursive: true, force: true });
       mkdirSync(dirname(dir), { recursive: true });
       await git(root, "worktree", "prune");
       await git(root, "worktree", "add", "-q", "--detach", dir, ref);
