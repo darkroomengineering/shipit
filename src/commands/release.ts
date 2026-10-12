@@ -8,6 +8,7 @@ import { releaseAndroid } from "../playlane.ts";
 export interface ReleaseOptions {
   platform?: Platform;
   dry: boolean;
+  unattended?: boolean;
 }
 
 /**
@@ -25,7 +26,8 @@ export async function release(config: ShipConfig, options: ReleaseOptions) {
   try {
     for (const platform of platforms) {
       try {
-        if (platform === "ios") await releaseIos(config, new Asc(loadCredentials(config), options.dry), options.dry);
+        if (platform === "ios")
+          await releaseIos(config, new Asc(loadCredentials(config), options.dry), options.dry, options.unattended);
         else await releaseAndroid(config, options.dry);
       } catch (error) {
         log(`${platform}: failed: ${errorMessage(error)}`);

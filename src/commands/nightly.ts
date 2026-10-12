@@ -64,7 +64,7 @@ export async function nightly({ dry }: { dry: boolean }) {
     }
     if (config.nightly) {
       try {
-        await release(config, { dry });
+        await release(config, { dry, unattended: true });
       } catch (error) {
         log(`${config.name}: release failed: ${errorMessage(error)}`);
         failures.push(`${config.name} release`);

@@ -17,15 +17,11 @@ export const OPEN = new Set([
   "INVALID_BINARY",
 ]);
 // A build counts as new until a submitted version carries it, so one that missed a night (still processing, or a
-// submit that failed partway, including after a withdrawal) goes out the next night. A rejected version may be
-// resubmitted with the same build once its metadata is corrected.
-const RESUBMITTABLE = new Set([
-  "PREPARE_FOR_SUBMISSION",
-  "READY_FOR_REVIEW",
-  "DEVELOPER_REJECTED",
-  "REJECTED",
-  "METADATA_REJECTED",
-]);
+// submit that failed partway, including after a withdrawal) goes out the next night.
+const UNSUBMITTED = new Set(["PREPARE_FOR_SUBMISSION", "READY_FOR_REVIEW"]);
+// A rejected version goes back with the same build only from a manual `ship release`, after you fix what App
+// Review flagged; the nightly job would otherwise resend an unchanged rejection every night.
+const REJECTED = new Set(["DEVELOPER_REJECTED", "REJECTED", "METADATA_REJECTED"]);
 const DAY = 24 * 60 * 60 * 1000;
 
 interface Listing {
@@ -66,7 +62,7 @@ export async function openVersion(
  * commits since the live build. A submission still waiting for or in review is withdrawn and replaced, so each
  * release carries every build since the live one.
  */
-export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean) {
+export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean, unattended = false) {
   const ios = config.ios;
   if (!ios) throw new Error("ship.json has no ios section");
   const app = await asc.app(ios.bundleId);
@@ -89,8 +85,13 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean) {
   const attached = current
     ? (await asc.api<{ data: Resource | null }>(`/appStoreVersions/${current.id}/build`)).data
     : null;
-  if (!build || (attached?.id === build.id && !RESUBMITTABLE.has(state ?? ""))) {
-    say(`no new ${version} build in TestFlight`);
+  const resubmit = UNSUBMITTED.has(state ?? "") || (!unattended && REJECTED.has(state ?? ""));
+  if (!build || (attached?.id === build.id && !resubmit)) {
+    say(
+      REJECTED.has(state ?? "") && unattended
+        ? `${version} is ${state}; fix what App Review flagged, then run ship release`
+        : `no new ${version} build in TestFlight`,
+    );
     return;
   }
   const buildNumber = attr(build, "version") ?? "";
