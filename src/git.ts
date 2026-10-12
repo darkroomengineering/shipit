@@ -14,12 +14,23 @@ export async function assertRepoRoot(root: string) {
     throw new Error(`${root} must be the root of a git repository (ship.json lives next to .git)`);
 }
 
-export const fetchMain = (root: string) => git(root, "fetch", "-q", "origin", "main");
-export const fetchTags = (root: string) => git(root, "fetch", "-q", "--tags", "origin");
+/** Repositories without an `origin` remote (local-only apps) release their local main and push nothing. */
+export const hasRemote = (root: string) =>
+  git(root, "remote").then((remotes) => remotes.split("\n").includes("origin"));
 
-/** A file as it is on GitHub's main. */
-export const showMain = (root: string, file: string) =>
-  run(["git", "-C", root, "show", `origin/main:${file}`], { capture: true });
+/** The branch every build comes from: GitHub's main, or the local main of a repository with no remote. */
+export const mainRef = async (root: string) => ((await hasRemote(root)) ? "origin/main" : "main");
+
+export const fetchMain = async (root: string) => {
+  if (await hasRemote(root)) await git(root, "fetch", "-q", "origin", "main");
+};
+export const fetchTags = async (root: string) => {
+  if (await hasRemote(root)) await git(root, "fetch", "-q", "--tags", "origin");
+};
+
+/** A file as it is on main (see `mainRef`). */
+export const showMain = async (root: string, file: string) =>
+  run(["git", "-C", root, "show", `${await mainRef(root)}:${file}`], { capture: true });
 
 export async function mainVersion(config: ShipConfig): Promise<string> {
   return readVersion(config.version, await showMain(config.root, config.version.file));
@@ -111,22 +122,33 @@ export function copyIgnored(config: ShipConfig, worktree: string, paths: string[
   }
 }
 
-/** Commits a new version to GitHub's main from a throwaway worktree, so the working copy is untouched. */
+/** Commits a new version to main from a throwaway worktree, so the working copy is untouched. */
 export async function pushVersion(config: ShipConfig, next: string) {
   const message = `chore: start version ${next}`;
-  await withWorktree(config, "origin/main", async (dir) => {
+  const remote = await hasRemote(config.root);
+  let commit = "";
+  await withWorktree(config, await mainRef(config.root), async (dir) => {
     const file = join(dir, config.version.file);
     writeFileSync(file, writeVersion(config.version, readFileSync(file, "utf8"), next));
     await git(dir, "-c", "commit.gpgsign=false", "commit", "-qam", message);
-    await git(dir, "push", "-q", "origin", "HEAD:main");
+    if (remote) await git(dir, "push", "-q", "origin", "HEAD:main");
+    commit = await git(dir, "rev-parse", "HEAD");
   });
-  await fetchMain(config.root);
-  log(`pushed "${message}" to main`);
+  if (remote) {
+    await fetchMain(config.root);
+    log(`pushed "${message}" to main`);
+    return;
+  }
+  // Moving a checked-out branch ref would leave the working copy showing the bump reversed, so fast-forward it.
+  if ((await git(config.root, "branch", "--show-current")) === "main")
+    await git(config.root, "merge", "-q", "--ff-only", commit);
+  else await git(config.root, "branch", "-f", "main", commit);
+  log(`committed "${message}" to local main`);
 }
 
 export async function tagBuild(config: ShipConfig, tag: string, commit: string, message: string) {
   await git(config.root, "-c", "tag.gpgsign=false", "tag", "-a", tag, commit, "-m", message);
-  await git(config.root, "push", "-q", "origin", tag);
+  if (await hasRemote(config.root)) await git(config.root, "push", "-q", "origin", tag);
 }
 
 /** The nearest build tag (v<version>-<build>) at or before `commit`, the start of its release-note range. */

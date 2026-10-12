@@ -1,5 +1,5 @@
 import type { ShipConfig } from "./config.ts";
-import { fetchTags, git } from "./git.ts";
+import { fetchTags, git, mainRef } from "./git.ts";
 
 export const GENERIC_NOTES = "Bug fixes and improvements.";
 
@@ -27,7 +27,7 @@ export async function releaseNotes(config: ShipConfig, range: NotesRange): Promi
   const { root } = config;
   await fetchTags(root);
   const [fromTag, toTag] = [await tagOf(root, range.from), await tagOf(root, range.to)];
-  const span = fromTag && toTag ? [`${fromTag}..${toTag}`] : [toTag ?? "origin/main", `--since=${range.since}`];
+  const span = fromTag && toTag ? [`${fromTag}..${toTag}`] : [toTag ?? (await mainRef(root)), `--since=${range.since}`];
   return notesFor(config, span, range.limit);
 }
 

@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Asc } from "../asc.ts";
 import { loadCredentials, resolvePath, type ShipConfig } from "../config.ts";
-import { git } from "../git.ts";
+import { git, mainRef } from "../git.ts";
 import { errorMessage } from "../log.ts";
 import { Play } from "../play.ts";
 
@@ -105,9 +105,10 @@ export async function doctor(config: ShipConfig) {
   if (!existsSync(join(config.root, ".git")))
     report("warn", "git", "not a repository; beta, release and version need one");
   else {
-    await check("git origin/main", async () => {
-      await git(config.root, "rev-parse", "--verify", "-q", "origin/main");
-      return undefined;
+    await check("git main", async () => {
+      const ref = await mainRef(config.root);
+      await git(config.root, "rev-parse", "--verify", "-q", ref);
+      return ref === "main" ? "no origin remote: builds come from local main and nothing is pushed" : undefined;
     });
   }
   if (!existsSync(join(config.root, config.version.file)))
