@@ -1,7 +1,7 @@
 import { type Asc, attr, type Resource } from "./asc.ts";
 import type { ShipConfig } from "./config.ts";
 import { fetchMain, mainVersion, pushVersion, showMain } from "./git.ts";
-import { log } from "./log.ts";
+import { errorMessage, log } from "./log.ts";
 import { releaseNotes } from "./notes.ts";
 import { bump } from "./version.ts";
 
@@ -17,8 +17,15 @@ export const OPEN = new Set([
   "INVALID_BINARY",
 ]);
 // A build counts as new until a submitted version carries it, so one that missed a night (still processing, or a
-// submit that failed partway, including after a withdrawal) goes out the next night.
-const UNSUBMITTED = new Set(["PREPARE_FOR_SUBMISSION", "READY_FOR_REVIEW", "DEVELOPER_REJECTED"]);
+// submit that failed partway, including after a withdrawal) goes out the next night. A rejected version may be
+// resubmitted with the same build once its metadata is corrected.
+const RESUBMITTABLE = new Set([
+  "PREPARE_FOR_SUBMISSION",
+  "READY_FOR_REVIEW",
+  "DEVELOPER_REJECTED",
+  "REJECTED",
+  "METADATA_REJECTED",
+]);
 const DAY = 24 * 60 * 60 * 1000;
 
 interface Listing {
@@ -82,11 +89,16 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean) {
   const attached = current
     ? (await asc.api<{ data: Resource | null }>(`/appStoreVersions/${current.id}/build`)).data
     : null;
-  if (!build || (attached?.id === build.id && !UNSUBMITTED.has(state ?? ""))) {
+  if (!build || (attached?.id === build.id && !RESUBMITTABLE.has(state ?? ""))) {
     say(`no new ${version} build in TestFlight`);
     return;
   }
   const buildNumber = attr(build, "version") ?? "";
+
+  // Store text shared with other apps lives in a repo file (description, keywords); it is read from GitHub's main.
+  // It is read before anything changes in App Store Connect, so a missing or malformed file cannot leave a
+  // withdrawn submission behind.
+  const listing = await readListing(config, ios.listing);
 
   const live = versions.find((candidate) => attr(candidate, "appStoreState") === "READY_FOR_SALE");
   const liveBuild = live
@@ -128,21 +140,40 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean) {
       })
     ).data;
 
-  // Store text shared with other apps lives in a repo file (description, keywords); it is read from GitHub's main.
-  const listing: Listing = ios.listing ? (JSON.parse(await showMain(config.root, ios.listing)) as Listing) : {};
   await submit(asc, app.id, target.id, version, build, notes, listing);
 }
 
-/** An app has one submission in review at a time; withdrawing it makes the version editable again. */
+async function readListing(config: ShipConfig, file: string | null | undefined): Promise<Listing> {
+  if (!file) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await showMain(config.root, file));
+  } catch (error) {
+    throw new Error(`ios.listing ${file} on main is unreadable: ${errorMessage(error)}`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+    throw new Error(`ios.listing ${file} on main must be a JSON object`);
+  return parsed as Listing;
+}
+
+/**
+ * Withdraws the review submission that holds this version, which makes the version editable again. Other
+ * submissions for the app (In-App Events, say) are separate and stay in review.
+ */
 async function withdraw(asc: Asc, appId: string, versionId: string, version: string, state: string) {
   const open = await asc.list(
     `/reviewSubmissions?filter[app]=${appId}&filter[platform]=IOS&filter[state]=WAITING_FOR_REVIEW,IN_REVIEW,UNRESOLVED_ISSUES`,
   );
+  let canceled = 0;
   for (const submission of open) {
+    const items = await asc.list(`/reviewSubmissions/${submission.id}/items?include=appStoreVersion`);
+    if (!items.some((item) => item.relationships?.appStoreVersion?.data?.id === versionId)) continue;
     await asc.patch(`/reviewSubmissions/${submission.id}`, {
       data: { type: "reviewSubmissions", id: submission.id, attributes: { canceled: true } },
     });
+    canceled++;
   }
+  if (!canceled) throw new Error(`${version} is ${state}, but no active review submission holds it`);
   let now = state;
   for (let i = 0; i < 40 && now !== "DEVELOPER_REJECTED" && now !== "PREPARE_FOR_SUBMISSION"; i++) {
     await Bun.sleep(15_000);
