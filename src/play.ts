@@ -31,16 +31,24 @@ export class Play {
   constructor(
     private readonly keyFile: string,
     packageName: string,
-    /** A read-only client refuses everything except GETs and creating or deleting an edit (Play reads tracks through an edit). */
+    /** A read-only client refuses every request that is not a GET. */
     private readonly readOnly = false,
+    /** Play reads tracks only through an edit, so a read-only client that inspects tracks may also create and delete edits. */
+    private readonly inspectOnly = false,
   ) {
     this.api = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${packageName}`;
     this.upload = `https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/${packageName}`;
   }
 
-  static forConfig(root: string, android: AndroidConfig, readOnly = false): Play {
+  static forConfig(root: string, android: AndroidConfig): Play {
     if (!android.playKey) throw new Error("android.playKey is not set in ship.json");
-    return new Play(resolvePath(root, android.playKey), android.package, readOnly);
+    return new Play(resolvePath(root, android.playKey), android.package);
+  }
+
+  /** For status and doctor: reads tracks through a short-lived edit and writes nothing else. */
+  static inspector(root: string, android: AndroidConfig): Play {
+    if (!android.playKey) throw new Error("android.playKey is not set in ship.json");
+    return new Play(resolvePath(root, android.playKey), android.package, true, true);
   }
 
   async accessToken(): Promise<string> {
@@ -76,7 +84,11 @@ export class Play {
   async call<T = unknown>(url: string, init: RequestInit = {}): Promise<T> {
     const method = init.method ?? "GET";
     const isEdit = /\/edits(\/[^/:]+)?$/.test(url.split("?")[0] ?? "");
-    if (this.readOnly && method !== "GET" && !(isEdit && (method === "POST" || method === "DELETE"))) {
+    if (
+      this.readOnly &&
+      method !== "GET" &&
+      !(this.inspectOnly && isEdit && (method === "POST" || method === "DELETE"))
+    ) {
       throw new Error(`read-only client refused ${method} ${url}`);
     }
     const response = await fetch(url, {

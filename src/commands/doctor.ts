@@ -91,7 +91,7 @@ async function checkAndroid(config: ShipConfig) {
   const key = resolvePath(config.root, android.playKey);
   if (!existsSync(key)) return report("fail", "play key", `${key} is missing`);
   await check("Google Play access", async () => {
-    const play = Play.forConfig(config.root, android, true);
+    const play = Play.inspector(config.root, android);
     const edit = await play.newEdit();
     await play.deleteEdit(edit);
     return android.package;

@@ -47,7 +47,15 @@ export async function releaseAndroid(config: ShipConfig, dry: boolean) {
   const android = config.android;
   if (!android) throw new Error("ship.json has no android section");
   const say = (message: string) => log(`android: ${message}`);
-  const play = Play.forConfig(config.root, android, dry);
+  // Play reads tracks only through an edit, and an edit can invalidate one another session has open, so a dry
+  // run opens none.
+  if (dry) {
+    say(
+      "dry run: skipped checking the internal and production tracks and promoting the newest internal build to production",
+    );
+    return;
+  }
+  const play = Play.forConfig(config.root, android);
 
   const edit = await play.newEdit();
   const production = await play.releases(edit, "production");
@@ -69,11 +77,6 @@ export async function releaseAndroid(config: ShipConfig, dry: boolean) {
     limit: NOTES_LIMIT,
   });
   say(`sending version code ${candidate} to production\n${notes}`);
-  if (dry) {
-    say("dry run: skipped the production release");
-    await play.deleteEdit(edit);
-    return;
-  }
 
   // Play does not say whether the newest production release is live or still in review. A commit that refuses to
   // replace changes in review tells the two apart: when it is refused, that release never reached users, so its

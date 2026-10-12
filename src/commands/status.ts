@@ -55,7 +55,7 @@ async function androidStatus(config: ShipConfig) {
   if (!android) return;
   console.log(`Android ${android.package}`);
   if (!android.playKey) return line("Play", "no playKey in ship.json");
-  const play = Play.forConfig(config.root, android, true);
+  const play = Play.inspector(config.root, android);
   const edit = await play.newEdit();
   try {
     for (const track of ["internal", "production"]) {
