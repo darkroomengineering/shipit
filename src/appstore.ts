@@ -233,26 +233,31 @@ async function submit(
   }
   log(`ios: attached build ${attr(build, "version")}${whatsNew ? " and release notes" : ""} to ${version}`);
 
-  // Resume the draft that already holds this version (left by a run that failed partway); otherwise open a new
-  // one, so a draft someone started by hand is never submitted along with it.
+  // Resume the draft that already holds this version, or an empty one, both left by runs that failed partway;
+  // otherwise open a new one, so a draft someone started by hand is never submitted along with it. Apple caps
+  // open drafts at 5, so failed runs must not each leave a new empty one behind.
   const drafts = await asc.list(
     `/reviewSubmissions?filter[app]=${appId}&filter[platform]=IOS&filter[state]=READY_FOR_REVIEW`,
   );
   let submission: Resource | undefined;
+  let empty: Resource | undefined;
   for (const draft of drafts) {
     const items = await asc.list(`/reviewSubmissions/${draft.id}/items?include=appStoreVersion`);
     if (items.length === 1 && items[0]?.relationships?.appStoreVersion?.data?.id === versionId) submission = draft;
+    if (items.length === 0) empty ??= draft;
   }
   if (!submission) {
-    submission = (
-      (await asc.post("/reviewSubmissions", {
-        data: {
-          type: "reviewSubmissions",
-          attributes: { platform: "IOS" },
-          relationships: { app: { data: { type: "apps", id: appId } } },
-        },
-      })) as { data: Resource }
-    ).data;
+    submission =
+      empty ??
+      (
+        (await asc.post("/reviewSubmissions", {
+          data: {
+            type: "reviewSubmissions",
+            attributes: { platform: "IOS" },
+            relationships: { app: { data: { type: "apps", id: appId } } },
+          },
+        })) as { data: Resource }
+      ).data;
     await asc.post("/reviewSubmissionItems", {
       data: {
         type: "reviewSubmissionItems",
