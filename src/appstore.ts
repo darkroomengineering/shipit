@@ -150,7 +150,8 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean, una
       })
     ).data;
 
-  await submit(asc, app.id, target.id, version, build, notes, listing);
+  // App Store Connect refuses whatsNew on an app's first version, so a never-released app submits without notes.
+  await submit(asc, app.id, target.id, version, build, live ? notes : undefined, listing);
 }
 
 async function readListing(config: ShipConfig, file: string | null | undefined): Promise<Listing> {
@@ -209,7 +210,7 @@ async function submit(
   versionId: string,
   version: string,
   build: Resource,
-  whatsNew: string,
+  whatsNew: string | undefined,
   listing: Listing,
 ) {
   await asc.patch(`/appStoreVersions/${versionId}/relationships/build`, { data: { type: "builds", id: build.id } });
@@ -225,12 +226,12 @@ async function submit(
   });
   // App Review requires whatsNew on every localization; notes someone wrote by hand in another locale are kept.
   for (const localization of localizations) {
-    if (localization.id === en.id || attr(localization, "whatsNew")) continue;
+    if (!whatsNew || localization.id === en.id || attr(localization, "whatsNew")) continue;
     await asc.patch(`/appStoreVersionLocalizations/${localization.id}`, {
       data: { type: "appStoreVersionLocalizations", id: localization.id, attributes: { whatsNew } },
     });
   }
-  log(`ios: attached build ${attr(build, "version")} and release notes to ${version}`);
+  log(`ios: attached build ${attr(build, "version")}${whatsNew ? " and release notes" : ""} to ${version}`);
 
   // Resume the draft that already holds this version (left by a run that failed partway); otherwise open a new
   // one, so a draft someone started by hand is never submitted along with it.
