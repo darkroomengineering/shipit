@@ -48,6 +48,7 @@ At the repo root. Unknown keys are rejected so typos show up.
   "version": { "file": "app.json", "json": "expo.version" },
   "checks": ["bun run lint", "bun run typecheck"],
   "notesPaths": ["src", "assets"],
+  "notesFile": "RELEASE_NOTES.md",
   "credentials": "~/.config/pokefolio/asc.env",
   "ios": {
     "kind": "expo",
@@ -77,6 +78,7 @@ At the repo root. Unknown keys are rejected so typos show up.
 | `version` | Where the version lives. `{ "file": "VERSION" }` for a plain file, `{ "file": "app.json", "json": "expo.version" }` for JSON, `{ "file": "project.yml", "yaml": "settings.base.MARKETING_VERSION" }` for YAML. Edits are targeted: JSON keeps its formatting, and YAML changes every line whose key matches the last segment (XcodeGen files often repeat `MARKETING_VERSION` per target). |
 | `checks` | Shell commands run in the build worktree before building. Skip with `--skip-checks`. |
 | `notesPaths` | Only commits that touch these paths become release notes. Empty means the whole repo. |
+| `notesFile` | Optional repo-relative file of hand-written store release notes, read from main. See [Release notes](#release-notes). |
 | `credentials` | An env file with the App Store Connect key. Default `~/.config/shipit/asc.env`. |
 | `ios.kind` | `expo` (prebuild, pods, archive) or `xcodegen` (`xcodegen generate`, then archive). |
 | `ios.dir` | `xcodegen`: the folder with `project.yml`. `expo`: the native folder, always named `ios`; the Expo project root is its parent, so `apps/mobile/ios` works for a monorepo. |
@@ -90,6 +92,24 @@ At the repo root. Unknown keys are rejected so typos show up.
 | `android.dir` | Folder with `gradlew`. |
 | `android.versionCodeProperty` | Gradle property that receives the version code (`-P<name>=<code>`). |
 | `android.playKey` | Play service account JSON. Without it a bundle is built and left in `~/Desktop/<Name>-Android/` for a manual upload. |
+
+### Release notes
+
+`ship release` writes store notes from the `feat:`, `fix:` and `perf:` commit subjects since the live build. To write them yourself, set `notesFile` and commit a file like this to main before releasing:
+
+```markdown
+# 1.0.7
+
+- Lines here go to both stores
+
+## iOS
+- Lines here go to the App Store only
+
+## Android
+- Lines here go to Play only
+```
+
+The first heading must match the version being released. A file still headed with the previous version, a missing file, or one with no lines for a store falls back to commit subjects, and the log says so. Notes over the store's limit (App Store 4000, Play 500 characters) stop the release instead of being cut. When a Play release replaces one still in review, the file's notes are used as written, without the replaced build's notes added.
 
 ### Build numbers
 

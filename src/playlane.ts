@@ -1,6 +1,6 @@
 import type { ShipConfig } from "./config.ts";
 import { log } from "./log.ts";
-import { releaseNotes } from "./notes.ts";
+import { fileNotes, releaseNotes, versionOfBuild } from "./notes.ts";
 import { newestCode, Play, type PlayRelease } from "./play.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -70,12 +70,16 @@ export async function releaseAndroid(config: ShipConfig, dry: boolean) {
     .filter((release) => release.status === "completed")
     .sort((a, b) => newestCode([b]) - newestCode([a]))[0];
   const live = previous ? newestCode([previous]) : 0;
-  const notes = await releaseNotes(config, {
-    from: live ? buildOf(live) : undefined,
-    to: buildOf(candidate),
-    since: new Date(Date.now() - 7 * DAY).toISOString(),
-    limit: NOTES_LIMIT,
-  });
+  const version = await versionOfBuild(config.root, buildOf(candidate));
+  const written = version ? await fileNotes(config, "android", version, NOTES_LIMIT) : undefined;
+  const notes =
+    written ??
+    (await releaseNotes(config, {
+      from: live ? buildOf(live) : undefined,
+      to: buildOf(candidate),
+      since: new Date(Date.now() - 7 * DAY).toISOString(),
+      limit: NOTES_LIMIT,
+    }));
   say(`sending version code ${candidate} to production\n${notes}`);
 
   // Play does not say whether the newest production release is live or still in review. A commit that refuses to
@@ -104,7 +108,8 @@ export async function releaseAndroid(config: ShipConfig, dry: boolean) {
       await send(edit, "completed", notes, "ERROR_IF_IN_REVIEW");
     } catch (error) {
       if (!String(error).includes("CHANGES_ALREADY_IN_REVIEW")) throw error;
-      const all = carried(notes, previous);
+      // Hand-written notes already describe the whole release, so the replaced build's notes are not added.
+      const all = written ?? carried(notes, previous);
       say(`version code ${live} is still in review; replacing it, with its notes\n${all}`);
       await send(await play.newEdit(), "completed", all, "CANCEL_IN_REVIEW_AND_SUBMIT");
     }

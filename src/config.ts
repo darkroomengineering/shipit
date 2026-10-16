@@ -42,6 +42,8 @@ export interface ShipConfig {
   version: VersionSpec;
   checks: string[];
   notesPaths: string[];
+  /** Repo-relative file of hand-written store release notes, read from main. */
+  notesFile: string | null;
   credentials: string | null;
   ios?: IosConfig;
   android?: AndroidConfig;
@@ -212,6 +214,7 @@ export function parseConfig(text: string, root: string): ShipConfig {
     version: parseVersion(top.object("version"), errors),
     checks: top.strings("checks"),
     notesPaths: top.strings("notesPaths"),
+    notesFile: top.optionalString("notesFile"),
     credentials: top.optionalString("credentials"),
   };
   const ios = top.object("ios");
@@ -219,7 +222,17 @@ export function parseConfig(text: string, root: string): ShipConfig {
   if (ios) config.ios = parseIos(ios, errors);
   if (android) config.android = parseAndroid(android, errors);
   if (!ios && !android) errors.push("ios or android: configure at least one platform");
-  top.rejectUnknown(["name", "nightly", "version", "checks", "notesPaths", "credentials", "ios", "android"]);
+  top.rejectUnknown([
+    "name",
+    "nightly",
+    "version",
+    "checks",
+    "notesPaths",
+    "notesFile",
+    "credentials",
+    "ios",
+    "android",
+  ]);
   errors.push(...top.errors);
   if (errors.length) throw new Error(`${join(root, "ship.json")}:\n  ${errors.join("\n  ")}`);
   return config;

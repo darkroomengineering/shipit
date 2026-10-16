@@ -2,7 +2,7 @@ import { type Asc, attr, type Resource } from "./asc.ts";
 import type { ShipConfig } from "./config.ts";
 import { fetchMain, mainVersion, pushVersion, showMain } from "./git.ts";
 import { errorMessage, log } from "./log.ts";
-import { releaseNotes } from "./notes.ts";
+import { fileNotes, releaseNotes } from "./notes.ts";
 import { bump } from "./version.ts";
 
 // Until approval a version takes new builds, and the nightly job can swap the newest one into review.
@@ -58,8 +58,8 @@ export async function openVersion(
 }
 
 /**
- * Sends the newest TestFlight build of the current version to App Review, with release notes from the feat/fix
- * commits since the live build. A submission still waiting for or in review is withdrawn and replaced, so each
+ * Sends the newest TestFlight build of the current version to App Review, with release notes from `notesFile` or
+ * the feat/fix commits since the live build. A submission still waiting for or in review is withdrawn and replaced, so each
  * release carries every build since the live one.
  */
 export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean, unattended = false) {
@@ -109,12 +109,14 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean, una
         )
       ).data
     : null;
-  const notes = await releaseNotes(config, {
-    from: attr(liveBuild ?? undefined, "version"),
-    to: buildNumber,
-    since: attr(liveBuild ?? undefined, "uploadedDate") ?? new Date(Date.now() - 7 * DAY).toISOString(),
-    limit: 3900,
-  });
+  const notes =
+    (await fileNotes(config, "ios", version, 3900)) ??
+    (await releaseNotes(config, {
+      from: attr(liveBuild ?? undefined, "version"),
+      to: buildNumber,
+      since: attr(liveBuild ?? undefined, "uploadedDate") ?? new Date(Date.now() - 7 * DAY).toISOString(),
+      limit: 3900,
+    }));
 
   say(`submitting ${version} build ${buildNumber} (${state ?? "new version"})\n${notes}`);
   if (dry) {
