@@ -217,8 +217,9 @@ async function submit(
 ) {
   await asc.patch(`/appStoreVersions/${versionId}/relationships/build`, { data: { type: "builds", id: build.id } });
   const localizations = await asc.list(`/appStoreVersions/${versionId}/appStoreVersionLocalizations`);
-  const en = localizations.find((localization) => attr(localization, "locale") === "en-US");
-  if (!en) throw new Error(`App Store version ${version} has no en-US localization`);
+  // Apps listed only in another language (es-ES, say) have no en-US; the listing goes to whichever they have.
+  const en = localizations.find((localization) => attr(localization, "locale") === "en-US") ?? localizations[0];
+  if (!en) throw new Error(`App Store version ${version} has no localization`);
   await asc.patch(`/appStoreVersionLocalizations/${en.id}`, {
     data: {
       type: "appStoreVersionLocalizations",
