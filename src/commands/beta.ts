@@ -95,7 +95,10 @@ async function runBeta(config: ShipConfig, requested: Platform[], options: BetaO
       if (readVersion(config.version, text) !== version)
         writeFileSync(versionFile, writeVersion(config.version, text, version));
 
-      if (existsSync(join(worktree, "package.json")) && (ios?.kind === "expo" || config.checks.length)) {
+      if (
+        existsSync(join(worktree, "package.json")) &&
+        (ios?.kind === "expo" || config.checks.length || ios?.checks.length || config.android?.checks.length)
+      ) {
         await run(
           [
             "bun",
@@ -108,7 +111,12 @@ async function runBeta(config: ShipConfig, requested: Platform[], options: BetaO
         );
       }
       if (!options.skipChecks) {
-        for (const check of config.checks) {
+        const checks = [
+          ...config.checks,
+          ...(platforms.includes("ios") ? (ios?.checks ?? []) : []),
+          ...(platforms.includes("android") ? (config.android?.checks ?? []) : []),
+        ];
+        for (const check of checks) {
           log(`== ${check}`);
           await run(["bash", "-c", check], { cwd: worktree });
         }

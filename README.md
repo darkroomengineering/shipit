@@ -77,6 +77,7 @@ At the repo root. Unknown keys are rejected so typos show up.
 | `nightly` | `true` opts the app into `ship nightly` releases. Default `false`. |
 | `version` | Where the version lives. `{ "file": "VERSION" }` for a plain file, `{ "file": "app.json", "json": "expo.version" }` for JSON, `{ "file": "project.yml", "yaml": "settings.base.MARKETING_VERSION" }` for YAML. Edits are targeted: JSON keeps its formatting, and YAML changes every line whose key matches the last segment (XcodeGen files often repeat `MARKETING_VERSION` per target). |
 | `checks` | Shell commands run in the build worktree before building. Skip with `--skip-checks`. |
+| `ios.checks`, `android.checks` | The same, run only when that platform is being built, after its `copy` files are in the worktree. |
 | `notesPaths` | Only commits that touch these paths become release notes. Empty means the whole repo. |
 | `notesFile` | Optional repo-relative file of hand-written store release notes, read from main. See [Release notes](#release-notes). |
 | `credentials` | An env file with the App Store Connect key. Default `~/.config/shipit/asc.env`. |

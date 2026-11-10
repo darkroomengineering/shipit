@@ -21,6 +21,7 @@ export interface IosConfig {
   bundleId: string;
   externalGroups: string[];
   copy: string[];
+  checks: string[];
   preArchive: string | null;
   keepAlive: string | null;
   listing: string | null;
@@ -32,6 +33,7 @@ export interface AndroidConfig {
   versionCodeProperty: string;
   playKey: string | null;
   copy: string[];
+  checks: string[];
 }
 
 export interface ShipConfig {
@@ -163,6 +165,7 @@ function parseIos(raw: Raw, errors: string[]): IosConfig {
     bundleId: reader.string("bundleId"),
     externalGroups: reader.strings("externalGroups"),
     copy: reader.strings("copy"),
+    checks: reader.strings("checks"),
     preArchive: reader.optionalString("preArchive"),
     keepAlive,
     listing: reader.optionalString("listing"),
@@ -174,6 +177,7 @@ function parseIos(raw: Raw, errors: string[]): IosConfig {
     "bundleId",
     "externalGroups",
     "copy",
+    "checks",
     "preArchive",
     "keepAlive",
     "listing",
@@ -190,8 +194,9 @@ function parseAndroid(raw: Raw, errors: string[]): AndroidConfig {
     versionCodeProperty: reader.string("versionCodeProperty"),
     playKey: reader.optionalString("playKey"),
     copy: reader.strings("copy"),
+    checks: reader.strings("checks"),
   };
-  reader.rejectUnknown(["dir", "package", "versionCodeProperty", "playKey", "copy"]);
+  reader.rejectUnknown(["dir", "package", "versionCodeProperty", "playKey", "copy", "checks"]);
   errors.push(...reader.errors);
   return config;
 }
