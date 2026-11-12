@@ -180,9 +180,16 @@ describe("limits", () => {
     expect(problems).toEqual([
       "name is 31 characters; App Store Connect allows 30",
       "subtitle is 31 characters; App Store Connect allows 30",
-      "keywords is 101 characters; App Store Connect allows 100",
+      "keywords is 101 bytes; App Store Connect allows 100",
       "promotionalText is 171 characters; App Store Connect allows 170",
       "description is 4001 characters; App Store Connect allows 4000",
+    ]);
+  });
+
+  test("keywords are counted in UTF-8 bytes, so accented letters count double", () => {
+    expect(appStoreProblems({ keywords: "é".repeat(50) })).toEqual([]);
+    expect(appStoreProblems({ keywords: "é".repeat(51) })).toEqual([
+      "keywords is 102 bytes; App Store Connect allows 100",
     ]);
   });
 

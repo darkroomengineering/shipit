@@ -240,12 +240,20 @@ export const PLAY_LIMITS = { title: 30, shortDescription: 80, fullDescription: 4
 /** Characters as a person counts them, so an emoji or accented letter is one. */
 export const chars = (text: string) => [...text].length;
 
-function overLimits(text: Record<string, string | undefined>, limits: Record<string, number>, store: string): string[] {
+/** UTF-8 bytes, which App Store Connect uses for keywords: "up to 100 bytes". */
+export const bytes = (text: string) => Buffer.byteLength(text, "utf8");
+
+function overLimits(
+  text: Record<string, string | undefined>,
+  limits: Record<string, number>,
+  store: string,
+  byteKeys: ReadonlySet<string> = new Set(),
+): string[] {
   return Object.entries(limits).flatMap(([key, limit]) => {
     const value = text[key];
-    return value !== undefined && chars(value) > limit
-      ? [`${key} is ${chars(value)} characters; ${store} allows ${limit}`]
-      : [];
+    if (value === undefined) return [];
+    const [size, unit] = byteKeys.has(key) ? [bytes(value), "bytes"] : [chars(value), "characters"];
+    return size > limit ? [`${key} is ${size} ${unit}; ${store} allows ${limit}`] : [];
   });
 }
 
@@ -257,7 +265,7 @@ export function appStoreProblems(text: AppStoreText): string[] {
     const value = text[key];
     return value !== undefined && !URL.canParse(value) ? [`${key} is not a URL: ${value}`] : [];
   });
-  return [...overLimits({ ...text }, APP_STORE_LIMITS, "App Store Connect"), ...urls];
+  return [...overLimits({ ...text }, APP_STORE_LIMITS, "App Store Connect", new Set(["keywords"])), ...urls];
 }
 
 export function playProblems(text: PlayText): string[] {
