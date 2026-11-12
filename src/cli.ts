@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { loadConfig, type Platform } from "./config.ts";
+import { isTarget, loadConfig, PENDING_TARGETS, type Target } from "./config.ts";
 import { BusyError } from "./git.ts";
 import { errorMessage } from "./log.ts";
 
@@ -10,6 +10,7 @@ const USAGE = `ship: one release tool for every native app
   ship beta [ios|android] [--dry-run [--ref R]] [--skip-checks] build main, upload to TestFlight / Play internal
   ship release [ios|android] [--dry-run]                 send the newest beta to App Review / Play production
   ship version [patch|minor|major] [--dry-run]           print the version, or bump it on main
+  ship ci [ios|android]                                  clean origin/main only: run gates, then build every lane (dry run for now)
   ship nightly [--dry-run]                               release every nightly app and keep betas alive
   ship status                                            latest builds and store states
   ship doctor                                            check tools, credentials and the app record
@@ -37,11 +38,13 @@ if (!command || values.help || command === "help") {
 const dry = values["dry-run"];
 const root = resolve(values.C ?? process.cwd());
 
-function platformArg(): Platform | undefined {
+function platformArg(): Target | undefined {
   const [platform] = rest;
   if (platform === undefined) return undefined;
-  if (platform !== "ios" && platform !== "android")
-    throw new Error(`unknown platform "${platform}": use ios or android`);
+  if (!isTarget(platform))
+    throw new Error(
+      `unknown platform "${platform}": use ios or android (${PENDING_TARGETS.join(", ")} have no lane yet)`,
+    );
   return platform;
 }
 
@@ -71,6 +74,10 @@ async function main() {
     case "doctor": {
       const { doctor } = await import("./commands/doctor.ts");
       return doctor(loadConfig(root));
+    }
+    case "ci": {
+      const { ci } = await import("./commands/ci.ts");
+      return ci(loadConfig(root), { platform: platformArg() });
     }
     case "nightly": {
       const { nightly } = await import("./commands/nightly.ts");

@@ -1,12 +1,12 @@
 import { releaseIos } from "../appstore.ts";
 import { Asc } from "../asc.ts";
-import { loadCredentials, type Platform, platformsOf, type ShipConfig } from "../config.ts";
+import { lanesFor, loadCredentials, type ShipConfig, type Target } from "../config.ts";
 import { assertRepoRoot, lock } from "../git.ts";
 import { errorMessage, log } from "../log.ts";
 import { releaseAndroid } from "../playlane.ts";
 
 export interface ReleaseOptions {
-  platform?: Platform;
+  platform?: Target;
   dry: boolean;
   unattended?: boolean;
 }
@@ -16,10 +16,7 @@ export interface ReleaseOptions {
  * runs even when the other fails; the command fails if any did.
  */
 export async function release(config: ShipConfig, options: ReleaseOptions) {
-  const platforms = options.platform ? [options.platform] : platformsOf(config);
-  for (const platform of platforms) {
-    if (!config[platform]) throw new Error(`ship.json has no ${platform} section`);
-  }
+  const platforms = lanesFor(config, options.platform);
   await assertRepoRoot(config.root);
   const unlock = lock(config);
   const failures: string[] = [];

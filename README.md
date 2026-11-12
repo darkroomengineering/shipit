@@ -93,6 +93,15 @@ At the repo root. Unknown keys are rejected so typos show up.
 | `android.dir` | Folder with `gradlew`. |
 | `android.versionCodeProperty` | Gradle property that receives the version code (`-P<name>=<code>`). |
 | `android.playKey` | Play service account JSON. Without it a bundle is built and left in `~/Desktop/<Name>-Android/` for a manual upload. |
+| `versionFiles` | More files that carry the version: `{ "file", "json" }`, `{ "file", "yaml" }`, `{ "file", "regex" }` (the first capture group is the version) or `{ "file" }` for a plain file. Validated only; nothing stamps them yet. |
+| `changelog` | Repo-relative changelog file. Validated only. |
+| `secrets` | `{ "name", "path" or "env", "onePassword", "restoreHint" }` for each secret the release needs: where it lives, the 1Password item that holds it, and how to get it back. Validated only. |
+| `gates` | Shell commands `ship ci` runs in the checkout before any lane. |
+| `mac`, `macAppStore` | Mac app for direct download or the Mac App Store: `scheme`, `bundleId`, and optional `dir`, `copy`, `checks`. No lane yet. |
+| `windows`, `linux`, `tauri` | Optional `dir`, `copy`, `checks`. No lane yet. |
+| `npm` | `package`, and optional `dir`, `copy`, `checks`. No lane yet. |
+
+A config needs at least one target. Asking for a target with no lane (`ship beta mac`) fails with "lane not implemented yet (INC-998/999/1000)", and so does a command run for every target when the config has one of them, so half an app is never released by accident; pass `ios` or `android` to run only those.
 
 ### Release notes
 
@@ -148,6 +157,7 @@ The agent runs `ship nightly` at 03:00 with a PATH that includes `/opt/homebrew/
 
 ## Other commands
 
+- `ship ci`: for CI runners. It refuses unless the checkout is clean and `HEAD` is `origin/main` after a fetch, records that commit, runs `gates`, builds every lane from that commit as a dry run, and checks `origin/main` has not moved before it would publish. Publishing is not wired in yet, so it releases nothing.
 - `ship status`: the latest TestFlight build and its beta review state, App Store version states, and Play internal and production versions.
 - `ship doctor`: tools (`xcodebuild`, `xcodegen` or `pod`, `bun`, `java` for Android), credentials, the key file, the App Store Connect app, each external group, the Play key, and for Expo apps a warning when `ios/.xcode.env.local` points `NODE_BINARY` at a node that no longer exists.
 
