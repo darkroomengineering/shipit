@@ -10,13 +10,12 @@ tracks the work to get every app there.
 prereq ── Azure Artifact Signing account for the org (Windows signing)
 
 shipit src/config ─────────────┐
-darkroomengineering/.github ───┴── ship.json v2 + `ship ci` + reusable workflow ──┐
+shipit .github/workflows ──────┴── ship.json v2 + `ship ci` + reusable workflow ──┐
                                                                                   │
 programa release.yml + scripts ──┐                                                │
 browsee mac/scripts/release.sh ──┴── mac lane (Sparkle direct download) ──────────┤
 mesinyer windows.yml (Velopack) ──┐                                               │
 programa build-windows.ps1 ───────┴── windows lane ───────────────────────────────┤
-vigilia release.yml (tauri-action) ── tauri + linux lane ─────────────────────────┤
 pokefolio update-production.sh ────── `ship update` (guarded OTA) ────────────────┤
 nocam check-permissions + secrets ─── built-in gates + `ship doctor` ─────────────┤
 vigilia draft/finalize + aliases ──── channels, promote, rollback, latest.json ───┤
@@ -41,13 +40,17 @@ before it publishes. The other apps each do one thing better, and the standard t
 | codigo | The Mac App Store upload, including the check for rejections that `altool` reports with exit code 0. |
 | Wavecast | An internal-only TestFlight upload that skips Beta App Review. |
 
+## 0. Apps are native
+
+Each platform gets native code: Swift on Apple platforms, Kotlin on Android, and a native or GPUI build on Windows and Linux. A cross-platform framework (Tauri, Electron, Expo) is used only where it is measurably faster to build and run. Vigilia (Tauri) is the accepted exception. Metricae and Pokefolio (Expo) ship through `ship` until their native ports replace them.
+
 ## 1. Where a release runs
 
 A release always builds from a clean checkout of main's current head, never from a working tree.
 
 - **Desktop apps** release from CI when main goes green. The Windows build needs a Windows runner, so CI is required there anyway.
 - **Phone apps** can release from a Mac with `ship beta`, which uses a clean worktree of main. They move to CI once `ship ci` is complete.
-- The same `ship` code runs locally and in CI. CI calls it through one reusable workflow in `darkroomengineering/.github`.
+- The same `ship` code runs locally and in CI. An app's CI calls the reusable workflows in `darkroomengineering/shipit/.github/workflows` (for example `windows-lane.yml`) through a small caller workflow.
 
 ## 2. The stages
 
@@ -83,7 +86,7 @@ Over the air first; store releases for major updates.
 
 - **Mac direct download:** Sparkle 2 with EdDSA signatures, a signed feed, update verification before extraction, and delta updates.
 - **Windows:** Velopack.
-- **Tauri apps:** the Tauri updater with `latest.json`.
+- **Vigilia (Tauri):** the Tauri updater with `latest.json`. Vigilia is the one app that keeps its own release pipeline; `ship` has no Tauri lane.
 - **Expo apps:** `ship update` publishes EAS Update, with guards against native changes and a dirty tree.
 - **Native phone apps:** remote config and content only, because Apple and Google don't allow downloaded code.
 
@@ -93,7 +96,7 @@ Existing update feed URLs and update signing keys never change, like bundle IDs.
 
 - New apps publish to GitHub Releases. When the source is private, they publish to a public `<app>-releases` repo.
 - Apps with an existing feed keep it where it is (browsee stays on R2 at updates.browsee.app).
-- Every release has stable download names that always point at the newest build: `<App>-mac.dmg`, `<App>-windows-setup.exe`, `<App>-linux.AppImage`. A `latest.json` manifest lists the version, notes and links, and the website reads it for its download buttons.
+- Every release has stable download names that always point at the newest build: `<App>-mac.dmg` on Mac and `<packId>-x64-setup.exe` on Windows, each next to a per-build copy. Vigilia keeps its own names, including Linux. A `latest.json` manifest lists the version, notes and links, and the website reads it for its download buttons.
 
 ## 7. Signing and secrets
 
