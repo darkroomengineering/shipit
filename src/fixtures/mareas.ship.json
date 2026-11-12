@@ -1,0 +1,16 @@
+{
+  "name": "Mareas",
+  "nightly": false,
+  "version": { "file": "project.yml", "yaml": "settings.base.MARKETING_VERSION" },
+  "checks": [],
+  "notesPaths": ["Mareas", "MareasWidget", "Shared"],
+  "notesFile": "RELEASE_NOTES.md",
+  "credentials": "~/.appstoreconnect/mareas.env",
+  "ios": {
+    "kind": "xcodegen",
+    "dir": ".",
+    "scheme": "Mareas",
+    "bundleId": "com.frz.Mareas",
+    "externalGroups": []
+  }
+}

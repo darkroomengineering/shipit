@@ -134,15 +134,56 @@ export function copyIgnored(config: ShipConfig, worktree: string, paths: string[
   }
 }
 
+async function commitVersion(config: ShipConfig, dir: string, next: string) {
+  const file = join(dir, config.version.file);
+  writeFileSync(file, writeVersion(config.version, readFileSync(file, "utf8"), next));
+  await git(dir, "-c", "commit.gpgsign=false", "commit", "-qam", `chore: start version ${next}`);
+}
+
+/**
+ * Opens a pull request that moves main to a new version, so an unattended run never pushes to main. Runs that
+ * find the branch already pushed only make sure its pull request is open. A repository with no remote commits
+ * the version to its local main, as `pushVersion` does. Returns whether this run started the version, which a
+ * run that finds the branch already pushed did not.
+ */
+export async function proposeVersion(config: ShipConfig, next: string): Promise<boolean> {
+  if (!(await hasRemote(config.root))) {
+    await pushVersion(config, next);
+    return true;
+  }
+  const branch = `ship/version-${next}`;
+  const title = `chore: start version ${next}`;
+  const gh = (dir: string, ...args: string[]) =>
+    run(["gh", ...args], { cwd: dir, capture: true }).then((out) => out.trim());
+  const open = (dir: string) =>
+    gh(dir, "pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url // empty");
+  const create = async (dir: string) => {
+    const body = `App Review approved the version on main, so ship started ${next}. Builds already carry ${next}; \`ship release\` sends iOS builds to App Review once this is merged.`;
+    const url = await gh(dir, "pr", "create", "--base", "main", "--head", branch, "--title", title, "--body", body);
+    log(`opened ${url} to start version ${next}`);
+  };
+
+  if (await git(config.root, "ls-remote", "--heads", "origin", branch)) {
+    const url = await open(config.root);
+    if (url) log(`version ${next} waits for ${url} to be merged`);
+    else await create(config.root);
+    return false;
+  }
+  await withWorktree(config, await mainRef(config.root), async (dir) => {
+    await commitVersion(config, dir, next);
+    await git(dir, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
+    await create(dir);
+  });
+  return true;
+}
+
 /** Commits a new version to main from a throwaway worktree, so the working copy is untouched. */
 export async function pushVersion(config: ShipConfig, next: string) {
   const message = `chore: start version ${next}`;
   const remote = await hasRemote(config.root);
   let commit = "";
   await withWorktree(config, await mainRef(config.root), async (dir) => {
-    const file = join(dir, config.version.file);
-    writeFileSync(file, writeVersion(config.version, readFileSync(file, "utf8"), next));
-    await git(dir, "-c", "commit.gpgsign=false", "commit", "-qam", message);
+    await commitVersion(config, dir, next);
     if (remote) await git(dir, "push", "-q", "origin", "HEAD:main");
     commit = await git(dir, "rev-parse", "HEAD");
   });
