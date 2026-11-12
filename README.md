@@ -253,8 +253,8 @@ Signing and Sparkle need, besides the App Store Connect key:
 
 `ship beta windows` builds a Velopack installer and update feed, signs them, and puts them on a GitHub release. Velopack only builds on Windows, so the lane runs on a GitHub Actions Windows runner:
 
-- **On Windows** (a runner, or `ship ci` there) ship builds in the clean worktree: runs `publish`, installs the pinned `vpk` and runs `vpk pack`, which signs every binary it packs, `Update.exe` and `Setup.exe` with Azure Artifact Signing. It then checks `Get-AuthenticodeSignature` reports `Valid` for `Setup.exe` and for the main exe inside the full package (vpk signs a copy of `publishDir`, so the folder itself stays unsigned), copies `Setup.exe` to a stable `<packId>-x64-setup.exe` and a versioned `<packId>-<version>-<build>-x64-setup.exe`, checks the copies are byte-identical (SHA-256) and still `Valid`, and uploads them with the feed (`releases.win.json` and the `.nupkg`) to `release.tag` in `release.repo`. Packages go up before the stable name and the feed, so the feed never names a file that is not there yet. A release that does not exist yet is created as a draft and published only after every lane passed and the build is tagged.
-- **On a Mac** ship dispatches the app's `workflow` with `gh workflow run`, passing the version, build number and commit, and follows it with `gh run watch`. The runner builds that commit as that build into the same release and leaves tagging and publishing to the Mac run, so every lane of one run shares one build number and one release.
+- **On Windows** (a runner, or `ship ci` there) ship builds in the clean worktree: runs `publish`, installs the pinned `vpk` and runs `vpk pack`, which signs every binary it packs, `Update.exe` and `Setup.exe` with Azure Artifact Signing. It then checks `Get-AuthenticodeSignature` reports `Valid` for `Setup.exe` and for the main exe inside the full package (vpk signs a copy of `publishDir`, so the folder itself stays unsigned), copies `Setup.exe` to a stable `<packId>-x64-setup.exe` and a versioned `<packId>-<version>-<build>-x64-setup.exe`, checks the copies are byte-identical (SHA-256) and still `Valid`, and uploads them with the feed (`releases.win.json` and the `.nupkg`) to `release.tag` in `release.repo`. Packages go up before the stable name and the feed, so the feed never names a file that is not there yet. A release that does not exist yet is created as a draft and published only after every lane passed and the build is tagged. `ship release windows` publishes it again, also when it skips the build because main's head already carries a windows tag, so a beta that tagged but failed before publishing is finished by the next release.
+- **On a Mac** ship dispatches the app's `workflow` with `gh workflow run`, passing the version, build number, commit and a fresh `dispatch_id`, and follows that run with `gh run watch`. The caller's `run-name` must include `inputs.dispatch_id`: ship finds its own run by that id, never by time, and fails if it does not show up within a minute. The runner builds that commit as that build into the same release and leaves tagging and publishing to the Mac run, so every lane of one run shares one build number and one release.
 - **`--dry-run`** on a Mac prints every command the dispatch and the runner would run and calls nothing remote. On Windows it builds and packs without signing and prints the uploads it skipped.
 
 Velopack's version is `<version>-build.<build>`, so every build is an update even when the version has not moved. Each build uploads full packages only; delta packages are not made yet.
@@ -289,13 +289,14 @@ Velopack's version is `<version>-build.<build>`, so every build is an update eve
 
 ```yaml
 name: ship-windows
-run-name: ship windows ${{ inputs.build || github.sha }}
+run-name: ship windows ${{ inputs.dispatch_id || github.sha }}
 on:
   workflow_dispatch:
     inputs:
       version: { type: string, default: "" }
       build: { type: string, default: "" }
       commit: { type: string, default: "" }
+      dispatch_id: { type: string, default: "" }
       dry-run: { type: boolean, default: false }
 permissions:
   contents: write

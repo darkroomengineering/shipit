@@ -1,5 +1,6 @@
 import { releaseIos } from "../appstore.ts";
 import { Asc } from "../asc.ts";
+import { publishRelease } from "../build-windows.ts";
 import { lanesFor, loadCredentials, type ShipConfig, type Target } from "../config.ts";
 import { assertRepoRoot, builtPlatforms, fetchMain, fetchTags, lock, mainRef } from "../git.ts";
 import { errorMessage, log } from "../log.ts";
@@ -50,7 +51,8 @@ export async function release(config: ShipConfig, options: ReleaseOptions) {
         else if (platform === "ios")
           await releaseIos(config, new Asc(loadCredentials(config), options.dry), options.dry, options.unattended);
         else if (platform === "android") await releaseAndroid(config, options.dry);
-        else log("windows: the beta published the installer and update feed; there is no store review");
+        // Also when the build was skipped: a beta that tagged windows can still have failed before publishing.
+        else if (config.windows) await publishRelease(config.windows.release, options.dry);
       } catch (error) {
         log(`${platform}: failed: ${errorMessage(error)}`);
         failures.push(`${platform}: ${errorMessage(error)}`);

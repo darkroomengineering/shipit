@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -143,7 +143,8 @@ function releaseCreate(r: WindowsRun, sameRepo: boolean) {
   );
 }
 
-export const dispatchCommand = (r: WindowsRun, repo: string) => [
+/** The caller workflow puts `dispatch_id` in its run name, so ship can find exactly the run it dispatched. */
+export const dispatchCommand = (r: WindowsRun, repo: string, dispatchId: string) => [
   "gh",
   "workflow",
   "run",
@@ -158,6 +159,8 @@ export const dispatchCommand = (r: WindowsRun, repo: string) => [
   `build=${r.build}`,
   "-f",
   `commit=${r.commit}`,
+  "-f",
+  `dispatch_id=${dispatchId}`,
 ];
 const watchCommand = (repo: string, id: string) => [
   "gh",
@@ -220,7 +223,7 @@ export function windowsPlan(r: WindowsRun, repo: string, platform: NodeJS.Platfo
   if (buildsHere(platform)) return here;
   return [
     `windows builds on a GitHub Actions Windows runner through ${repo}'s ${windows.workflow}:`,
-    show(dispatchCommand(r, repo)),
+    show(dispatchCommand(r, repo, "<dispatch id>")),
     show(watchCommand(repo, "<run id>")),
     "the runner's ship beta windows then runs:",
     ...here.map((line) => `  ${line}`),
@@ -366,22 +369,32 @@ async function upload(r: WindowsRun, packaged: Packaged) {
   log(`windows: uploaded to ${release.repo} release ${release.tag}`);
 }
 
-async function findRun(repo: string, workflow: string, since: number): Promise<string> {
-  const list = ["gh", "run", "list", "--repo", repo, "--workflow", workflow, "--event", "workflow_dispatch"];
-  for (let attempt = 0; attempt < 20; attempt++) {
-    const out = await run([...list, "--limit", "5", "--json", "databaseId,createdAt"], { capture: true });
-    const runs: unknown = JSON.parse(out);
-    if (Array.isArray(runs)) {
-      for (const item of runs) {
-        const { databaseId, createdAt } = item as { databaseId?: unknown; createdAt?: unknown };
-        // Allows for clock skew between this machine and GitHub.
-        if (typeof databaseId === "number" && typeof createdAt === "string" && Date.parse(createdAt) >= since - 30_000)
-          return String(databaseId);
-      }
-    }
-    await Bun.sleep(3000);
+/** The id of the listed run whose name carries `dispatchId`, from `gh run list --json databaseId,displayTitle`. */
+export function matchRun(listed: unknown, dispatchId: string): string | undefined {
+  if (!Array.isArray(listed)) return undefined;
+  for (const item of listed) {
+    if (typeof item !== "object" || item === null) continue;
+    const { databaseId, displayTitle } = item as { databaseId?: unknown; displayTitle?: unknown };
+    if (typeof databaseId === "number" && typeof displayTitle === "string" && displayTitle.includes(dispatchId))
+      return String(databaseId);
   }
-  throw new Error(`dispatched ${workflow} in ${repo}, but no run of it showed up within a minute`);
+  return undefined;
+}
+
+/** Polls `list` until a run named with `dispatchId` appears; any other run, however recent, is someone else's. */
+export async function findRun(
+  list: () => Promise<string>,
+  dispatchId: string,
+  { attempts = 20, delayMs = 3000 } = {},
+): Promise<string> {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const id = matchRun(JSON.parse(await list()), dispatchId);
+    if (id) return id;
+    if (attempt < attempts - 1) await Bun.sleep(delayMs);
+  }
+  throw new Error(
+    `no run named with dispatch id ${dispatchId} showed up after ${attempts} checks; does the caller workflow's run-name include inputs.dispatch_id?`,
+  );
 }
 
 async function dispatch(r: WindowsRun) {
@@ -390,9 +403,17 @@ async function dispatch(r: WindowsRun) {
     for (const line of windowsPlan(r, repo)) log(`dry run: ${line}`);
     return;
   }
-  const since = Date.now();
-  const out = await run(dispatchCommand(r, repo), { capture: true });
-  const id = /\/actions\/runs\/(\d+)/.exec(out)?.[1] ?? (await findRun(repo, r.windows.workflow, since));
+  const dispatchId = randomUUID();
+  const out = await run(dispatchCommand(r, repo, dispatchId), { capture: true });
+  const { workflow } = r.windows;
+  const list = ["gh", "run", "list", "--repo", repo, "--workflow", workflow, "--event", "workflow_dispatch"];
+  // gh prints the URL of the run this dispatch created when GitHub returns it; otherwise match the dispatch id.
+  const id =
+    /\/actions\/runs\/(\d+)/.exec(out)?.[1] ??
+    (await findRun(
+      () => run([...list, "--limit", "20", "--json", "databaseId,displayTitle"], { capture: true }),
+      dispatchId,
+    ));
   log(`windows: building on https://github.com/${repo}/actions/runs/${id}`);
   await run(watchCommand(repo, id));
 }

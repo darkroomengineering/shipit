@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  findRun,
   githubRepo,
   installerNames,
+  matchRun,
   packVersion,
   pinnedRun,
   signTemplate,
@@ -12,6 +14,7 @@ import {
   windowsPlan,
 } from "./build-windows.ts";
 import { beta } from "./commands/beta.ts";
+import { release } from "./commands/release.ts";
 import { lanesFor, parseConfig, type ShipConfig } from "./config.ts";
 import { git } from "./git.ts";
 
@@ -147,7 +150,7 @@ describe("the dry-run plan", () => {
   test("for Mesinyer away from Windows: dispatch, watch, the runner's steps, then publish", () => {
     expect(windowsPlan(run(mesinyer), "darkroomengineering/mesinyer", "darwin")).toEqual([
       "windows builds on a GitHub Actions Windows runner through darkroomengineering/mesinyer's ship-windows.yml:",
-      `gh workflow run ship-windows.yml --repo darkroomengineering/mesinyer --ref main -f version=0.1.0 -f build=202611121530 -f commit=${"a".repeat(40)}`,
+      `gh workflow run ship-windows.yml --repo darkroomengineering/mesinyer --ref main -f version=0.1.0 -f build=202611121530 -f commit=${"a".repeat(40)} -f "dispatch_id=<dispatch id>"`,
       'gh run watch "<run id>" --repo darkroomengineering/mesinyer --exit-status --interval 30',
       "the runner's ship beta windows then runs:",
       '  pwsh -NoProfile -NonInteractive -Command "dotnet publish Mesinyer.Windows/Mesinyer.Windows.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -o publish"   (in /w/windows)',
@@ -276,29 +279,112 @@ describe("ship beta windows --dry-run away from Windows", () => {
   });
 });
 
-describe("windows-lane.yml", () => {
+describe("windows-lane.yml and the README's caller workflow", () => {
   const workflow = Bun.YAML.parse(
     readFileSync(join(import.meta.dir, "..", ".github", "workflows", "windows-lane.yml"), "utf8"),
   ) as {
     on: { workflow_call: { inputs: Record<string, unknown> } };
     jobs: { windows: { steps: { uses?: string; name?: string; env?: Record<string, string> }[] } };
   };
+  const readme = readFileSync(join(import.meta.dir, "..", "README.md"), "utf8");
+  const callerYaml = /```yaml\n(name: ship-windows\n[\s\S]*?)```/.exec(readme)?.[1] ?? "";
+  const caller = Bun.YAML.parse(callerYaml) as {
+    "run-name": string;
+    on: { workflow_dispatch: { inputs: Record<string, unknown> } };
+    jobs: { windows: { uses: string; with: Record<string, string> } };
+  };
 
-  test("takes every input ship dispatches, and hands them to ship as SHIP_RUN_*", () => {
+  test("the caller takes every input ship dispatches and names its run with the dispatch id", () => {
     const dispatched = windowsPlan(run(mesinyer), "darkroomengineering/mesinyer", "darwin")[1] ?? "";
-    const fields = [...dispatched.matchAll(/-f (\w+)=/g)].map((match) => match[1]);
-    expect(fields).toEqual(["version", "build", "commit"]);
+    const fields = [...dispatched.matchAll(/-f "?(\w+)=/g)].map((match) => match[1] ?? "");
+    expect(fields).toEqual(["version", "build", "commit", "dispatch_id"]);
+    for (const field of fields) expect(caller.on.workflow_dispatch.inputs).toHaveProperty(field);
+    expect(caller["run-name"]).toContain("${{ inputs.dispatch_id");
+    expect(caller.jobs.windows.uses).toStartWith("darkroomengineering/shipit/.github/workflows/windows-lane.yml@");
+  });
+
+  test("version, build and commit reach ship as SHIP_RUN_*", () => {
     const { inputs } = workflow.on.workflow_call;
     const env = workflow.jobs.windows.steps.find((step) => step.name === "ship")?.env ?? {};
-    for (const field of fields) {
-      expect(inputs).toHaveProperty(field as string);
-      expect(env[`SHIP_RUN_${field?.toUpperCase()}`]).toBe(`\${{ inputs.${field} }}`);
+    for (const field of ["version", "build", "commit"]) {
+      expect(caller.jobs.windows.with[field]).toBe(`\${{ inputs.${field} }}`);
+      expect(inputs).toHaveProperty(field);
+      expect(env[`SHIP_RUN_${field.toUpperCase()}`]).toBe(`\${{ inputs.${field} }}`);
     }
+    for (const field of Object.keys(caller.jobs.windows.with)) expect(inputs).toHaveProperty(field);
   });
 
   test("pins every action to a commit", () => {
     const uses = workflow.jobs.windows.steps.flatMap((step) => (step.uses ? [step.uses] : []));
     expect(uses.length).toBeGreaterThan(0);
     for (const action of uses) expect(action).toMatch(/@[0-9a-f]{40}$/);
+  });
+});
+
+describe("finding the dispatched run", () => {
+  const id = "3f1c2b9e-0000-4000-8000-000000000001";
+  const listed = (...runs: [number, string][]) =>
+    JSON.stringify(runs.map(([databaseId, displayTitle]) => ({ databaseId, displayTitle })));
+
+  test("matches only the run named with this dispatch id, ignoring newer and concurrent runs", async () => {
+    const pages = [
+      listed([12, "ship windows 3f1c2b9e-0000-4000-8000-000000000002"], [11, "ship windows abc123"]),
+      listed([13, "ship windows 3f1c2b9e-0000-4000-8000-000000000003"], [14, `ship windows ${id}`], [12, "x"]),
+    ];
+    let calls = 0;
+    const list = async () => pages[Math.min(calls++, pages.length - 1)] ?? "[]";
+    expect(await findRun(list, id, { attempts: 5, delayMs: 0 })).toBe("14");
+    expect(calls).toBe(2);
+  });
+
+  test("fails after a bounded wait when no run carries the id", async () => {
+    let calls = 0;
+    const list = async () => {
+      calls++;
+      return listed([20, "ship windows someone-else"]);
+    };
+    await expect(findRun(list, id, { attempts: 3, delayMs: 0 })).rejects.toThrow(
+      `no run named with dispatch id ${id} showed up after 3 checks`,
+    );
+    expect(calls).toBe(3);
+  });
+
+  test("ignores malformed listings", () => {
+    expect(matchRun({}, id)).toBeUndefined();
+    expect(matchRun([{ databaseId: "14", displayTitle: id }, null], id)).toBeUndefined();
+  });
+});
+
+describe("ship release windows", () => {
+  test("publishes the release even when main's head already has a windows build and the build is skipped", async () => {
+    const { config } = await repo("release");
+    const head = await git(config.root, "rev-parse", "HEAD");
+    await git(
+      config.root,
+      "-c",
+      "tag.gpgsign=false",
+      "tag",
+      "-a",
+      "v0.1.0-1",
+      head,
+      "-m",
+      "Mesinyer 0.1.0 build 1 (windows)",
+    );
+    await git(config.root, "push", "-q", "origin", "v0.1.0-1");
+    const bin = join(tmp, "release-bin");
+    const ghLog = join(tmp, "release-gh.log");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "gh"), `#!/bin/sh\necho "$*" >> "${ghLog}"\n`);
+    chmodSync(join(bin, "gh"), 0o755);
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    try {
+      await release(config, { platform: "windows", dry: false });
+    } finally {
+      process.env.PATH = path;
+    }
+    expect(readFileSync(ghLog, "utf8")).toBe(
+      "release edit rolling --draft=false --repo darkroomengineering/mesinyer-releases\n",
+    );
   });
 });
