@@ -20,7 +20,7 @@ Run `ship` from the app's folder (where `ship.json` lives, which is also the git
 | Lane | iOS | Android | Command |
 | --- | --- | --- | --- |
 | Beta | TestFlight, external groups, Beta App Review | Play internal track | `ship beta` |
-| Release | App Review (App Store) | Play production | `ship release` |
+| Release | Beta, then App Review (App Store) | Beta, then Play production | `ship release` |
 
 **Beta.** `ship beta` always builds from a clean worktree of `origin/main`, so uncommitted work never ships. A repository with no `origin` remote builds its local `main` and pushes nothing (tags and version bumps stay local). It:
 
@@ -31,7 +31,7 @@ Run `ship` from the app's folder (where `ship.json` lives, which is also the git
 5. Uploads, tags the commit `v<version>-<build>`, pushes the tag.
 6. For iOS, waits for Apple's processing, writes "What to Test", adds the build to each `externalGroups` group, and submits it for Beta App Review. An older build of the same version still waiting in Beta App Review is expired so the new one is not blocked.
 
-**Release.** `ship release` sends the newest processed TestFlight build of the current version to App Review, with notes made from the `feat:`, `fix:` and `perf:` commits since the live build. A submission still waiting for review is withdrawn and replaced, so each night's release carries every build of the day. On Android it promotes the newest internal build to production and replaces a production release that is still in review, carrying its notes over.
+**Release.** `ship release` runs `ship beta` first, then submits, so one command takes main all the way to review. A platform whose build of main's head commit is already uploaded (its build tag names that platform) skips the build, so a re-run or a quiet night never uploads a duplicate. If the build fails, nothing is submitted. It then sends the newest processed TestFlight build of the current version to App Review, with notes made from the `feat:`, `fix:` and `perf:` commits since the live build. A submission still waiting for review is withdrawn and replaced, so each night's release carries every build of the day. On Android it promotes the newest internal build to production and replaces a production release that is still in review, carrying its notes over.
 
 **Version.** `ship version` prints the version on `main`. `ship version patch|minor|major` commits and pushes the bump to `main`. Patch bumps after an approval are opened as pull requests during `ship beta`.
 
@@ -146,7 +146,7 @@ Google Play uses the service account JSON from `android.playKey`. It needs "Rele
 
 ## Nightly
 
-`ship nightly` scans `~/Developer/*/ship.json` and `~/Developer/*/*/ship.json`, so apps grouped in a folder such as `~/Developer/@darkroom` are found too. It skips `node_modules`, `.worktrees` and dot folders, and does not look inside a project for more projects. Set `SHIPIT_PROJECTS` to scan another folder. For each project it runs `ship release` when `nightly` is `true`, and a keep-alive beta when `ios.keepAlive` is due. Projects run one after another and one failure never stops the others; the exit code is non-zero if any failed, and a macOS notification names them. With `--dry-run` it reports what would run and builds nothing.
+`ship nightly` scans `~/Developer/*/ship.json` and `~/Developer/*/*/ship.json`, so apps grouped in a folder such as `~/Developer/@darkroom` are found too. It skips `node_modules`, `.worktrees` and dot folders, and does not look inside a project for more projects. Set `SHIPIT_PROJECTS` to scan another folder. For each project it runs `ship release` when `nightly` is `true` (which builds main first when it has commits no beta carries yet), and a keep-alive beta when `ios.keepAlive` is due. Projects run one after another and one failure never stops the others; the exit code is non-zero if any failed, and a macOS notification names them. With `--dry-run` it reports what would run and builds nothing.
 
 ```sh
 ship install-launchd --dry-run   # print the agent

@@ -8,7 +8,7 @@ import { errorMessage } from "./log.ts";
 const USAGE = `ship: one release tool for every native app
 
   ship beta [ios|android] [--dry-run [--ref R]] [--skip-checks] build main, upload to TestFlight / Play internal
-  ship release [ios|android] [--dry-run]                 send the newest beta to App Review / Play production
+  ship release [ios|android] [--dry-run] [--skip-checks] run ship beta, then send it to App Review / Play production
   ship version [patch|minor|major] [--dry-run]           print the version, or bump it on main
   ship ci [ios|android]                                  clean origin/main only: run gates, then build every lane (dry run for now)
   ship nightly [--dry-run]                               release every nightly app and keep betas alive
@@ -61,7 +61,7 @@ async function main() {
     }
     case "release": {
       const { release } = await import("./commands/release.ts");
-      return release(loadConfig(root), { platform: platformArg(), dry });
+      return release(loadConfig(root), { platform: platformArg(), dry, skipChecks: values["skip-checks"] });
     }
     case "version": {
       const { versionCommand } = await import("./commands/version.ts");

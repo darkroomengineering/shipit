@@ -232,4 +232,10 @@ export async function previousTag(root: string, commit: string): Promise<string 
   return tag || undefined;
 }
 
+/** Platforms that already have an uploaded build of `commit`, read from its build tags' "(ios + android)" message. */
+export async function builtPlatforms(root: string, commit: string): Promise<Set<string>> {
+  const subjects = await git(root, "tag", "-l", "v*-*", "--points-at", commit, "--format=%(contents:subject)");
+  return new Set(subjects.split("\n").flatMap((line) => line.match(/\(([^)]*)\)$/)?.[1]?.split(" + ") ?? []));
+}
+
 export const subjectOf = (root: string, ref: string) => git(root, "log", "-1", "--format=%s", ref);
