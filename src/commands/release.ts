@@ -49,7 +49,8 @@ export async function release(config: ShipConfig, options: ReleaseOptions) {
         if (platform === "mac") log("mac: the beta is on the app's only Sparkle feed, so there is nothing to promote");
         else if (platform === "ios")
           await releaseIos(config, new Asc(loadCredentials(config), options.dry), options.dry, options.unattended);
-        else await releaseAndroid(config, options.dry);
+        else if (platform === "android") await releaseAndroid(config, options.dry);
+        else log("windows: the beta published the installer and update feed; there is no store review");
       } catch (error) {
         log(`${platform}: failed: ${errorMessage(error)}`);
         failures.push(`${platform}: ${errorMessage(error)}`);

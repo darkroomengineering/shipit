@@ -81,7 +81,7 @@ describe("ship ci refuses", () => {
   test("a target with no lane", async () => {
     const { config } = await checkout("mac", { ...shipJson, macAppStore: { scheme: "D", bundleId: "a.b.mac" } });
     await expect(ci(config, {})).rejects.toThrow("macAppStore: lane not implemented yet (INC-998/999/1000)");
-    await expect(ci(config, { platform: "windows" })).rejects.toThrow("windows: lane not implemented yet");
+    await expect(ci(config, { platform: "linux" })).rejects.toThrow("linux: lane not implemented yet");
   });
 });
 

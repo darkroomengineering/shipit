@@ -5,6 +5,7 @@ import { Asc } from "../asc.ts";
 import { buildAndroid } from "../build-android.ts";
 import { buildIos } from "../build-ios.ts";
 import { shipMac } from "../build-mac.ts";
+import { buildsHere, pinnedRun, publishRelease, shipWindows } from "../build-windows.ts";
 import {
   lanesFor,
   loadCredentials,
@@ -13,6 +14,7 @@ import {
   resolvePath,
   type ShipConfig,
   type Target,
+  type WindowsRelease,
 } from "../config.ts";
 import {
   assertRepoRoot,
@@ -98,6 +100,7 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
   const { dry } = options;
   let platforms = requested;
   const { ios, mac } = config;
+  const windowsHere = platforms.includes("windows") && buildsHere();
 
   const credentials = ios && platforms.includes("ios") ? loadCredentials(config) : undefined;
   const asc = credentials ? new Asc(credentials, dry) : undefined;
@@ -107,7 +110,8 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
   // iOS build first moves the version on, and a new version gets builds of every platform.
   await fetchMain(config.root);
   await fetchTags(config.root);
-  let version = await mainVersion(config);
+  const pinned = await pinnedRun(config, platforms);
+  let version = pinned?.version ?? (await mainVersion(config));
   if (asc && appId) {
     const opened = await openVersion(config, asc, appId, dry);
     version = opened.version;
@@ -116,9 +120,9 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
 
   // One instant for every build number of this run.
   const now = new Date();
-  const build = runBuildNumber(config, now, dry);
+  const build = pinned?.build ?? runBuildNumber(config, now, dry);
   const versionCode = versionCodeFor(now);
-  const commit = await git(config.root, "rev-parse", options.ref ?? (await mainRef(config.root)));
+  const commit = pinned?.commit ?? (await git(config.root, "rev-parse", options.ref ?? (await mainRef(config.root))));
   log(
     `beta ${config.name} ${version} build ${build}${platforms.includes("android") ? ` (Android ${versionCode})` : ""} from ${commit.slice(0, 7)}${dry ? " [dry run]" : ""}`,
   );
@@ -132,6 +136,7 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
         ...(platforms.includes("ios") ? (ios?.copy ?? []) : []),
         ...(platforms.includes("android") ? (config.android?.copy ?? []) : []),
         ...(platforms.includes("mac") ? (mac?.copy ?? []) : []),
+        ...(windowsHere ? (config.windows?.copy ?? []) : []),
       ]);
       // A dry run after a bump builds the version the bump would have pushed.
       const versionFile = join(worktree, config.version.file);
@@ -145,7 +150,8 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
           config.checks.length ||
           ios?.checks.length ||
           config.android?.checks.length ||
-          mac?.checks.length)
+          mac?.checks.length ||
+          (windowsHere && config.windows?.checks.length))
       ) {
         await run(
           [
@@ -164,6 +170,7 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
           ...(platforms.includes("ios") ? (ios?.checks ?? []) : []),
           ...(platforms.includes("android") ? (config.android?.checks ?? []) : []),
           ...(platforms.includes("mac") ? (mac?.checks ?? []) : []),
+          ...(windowsHere ? (config.windows?.checks ?? []) : []),
         ];
         for (const check of checks) {
           log(`== ${check}`);
@@ -224,6 +231,24 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
           failures.push(`mac: ${errorMessage(error)}`);
         }
       }
+      let windowsRelease: WindowsRelease | undefined;
+      if (platforms.includes("windows") && config.windows) {
+        try {
+          windowsRelease = await shipWindows({
+            config,
+            windows: config.windows,
+            worktree,
+            version,
+            build,
+            commit,
+            notes,
+            dry,
+          });
+          shipped ||= !dry;
+        } catch (error) {
+          failures.push(`windows: ${errorMessage(error)}`);
+        }
+      }
 
       // The tag maps the build to its commit, for release notes.
       // A tag failure never blocks distribution: the build is already uploaded and testers should get it.
@@ -237,9 +262,16 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
         });
       const planned = tagged(platforms).map(({ tag }) => tag);
       await write(dry, `tagging ${planned.join(" and ")} and pushing the tags`, async () => {
-        if (!shipped) return;
+        // A pinned run's tag belongs to the run that dispatched it.
+        if (!shipped || pinned) return;
         const names = platforms.filter((platform) =>
-          platform === "ios" ? iosUploaded : platform === "mac" ? macPublished : true,
+          platform === "ios"
+            ? iosUploaded
+            : platform === "mac"
+              ? macPublished
+              : platform === "windows"
+                ? Boolean(windowsRelease)
+                : true,
         );
         for (const { tag, message } of tagged(names)) {
           try {
@@ -261,6 +293,7 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
       }
 
       if (failures.length) throw new Error(failures.join("\n"));
+      if (windowsRelease && !pinned) await publishRelease(windowsRelease, dry);
       log(
         dry
           ? `dry run done: ${version} build ${build}, nothing uploaded`

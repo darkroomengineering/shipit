@@ -110,6 +110,43 @@ export interface MacDirectConfig extends MacConfig {
   hosting: MacHosting;
 }
 
+/** Azure Artifact Signing (formerly Trusted Signing). The runner signs in with azure/login over OIDC first. */
+export interface WindowsSigning {
+  /** Account endpoint, such as `https://eus.codesigning.azure.net/`. */
+  endpoint: string;
+  account: string;
+  /** Public Trust certificate profile name. */
+  profile: string;
+  publisher: string;
+}
+
+/** The GitHub release the installer and update feed go to, shared with the other desktop lanes. */
+export interface WindowsRelease {
+  /** `owner/name`; a private app publishes to a public `<app>-releases` repository. */
+  repo: string;
+  tag: string;
+}
+
+/** A Windows app packaged with Velopack: a Setup.exe installer plus the update feed installed copies read. */
+export interface WindowsConfig extends TargetConfig {
+  /** PowerShell command, run in `dir`, that publishes the app into `publishDir`. */
+  publish: string;
+  /** Relative to `dir`. */
+  publishDir: string;
+  packId: string;
+  packTitle: string;
+  mainExe: string;
+  runtime: "win-x64" | "win-arm64" | "win-x86";
+  channel: string;
+  /** vpk version; keep it equal to the app's Velopack NuGet package. */
+  vpk: string;
+  /** The app's workflow_dispatch workflow that calls shipit's windows-lane.yml. */
+  workflow: string;
+  release: WindowsRelease;
+  /** `null` ships unsigned, with a warning on every run. */
+  signing: WindowsSigning | null;
+}
+
 export interface NpmConfig extends TargetConfig {
   package: string;
 }
@@ -150,18 +187,18 @@ export interface ShipConfig {
   android?: AndroidConfig;
   mac?: MacDirectConfig;
   macAppStore?: MacConfig;
-  windows?: TargetConfig;
+  windows?: WindowsConfig;
   linux?: TargetConfig;
   tauri?: TargetConfig;
   npm?: NpmConfig;
 }
 
 /** Targets with a lane: ship can build and release them. */
-export const PLATFORMS = ["ios", "android", "mac"] as const;
+export const PLATFORMS = ["ios", "android", "mac", "windows"] as const;
 export type Platform = (typeof PLATFORMS)[number];
 
 /** Targets ship.json accepts whose lanes do not exist yet. */
-export const PENDING_TARGETS = ["macAppStore", "windows", "linux", "tauri", "npm"] as const;
+export const PENDING_TARGETS = ["macAppStore", "linux", "tauri", "npm"] as const;
 export type PendingTarget = (typeof PENDING_TARGETS)[number];
 export type Target = Platform | PendingTarget;
 
@@ -355,6 +392,89 @@ const parseMac = (raw: Raw, name: string, errors: string[]): MacConfig =>
     errors,
     (reader) => ({ scheme: reader.string("scheme"), bundleId: reader.string("bundleId") }),
     ["scheme", "bundleId"],
+  );
+
+const WINDOWS_RUNTIMES = ["win-x64", "win-arm64", "win-x86"] as const;
+/** Values that end up inside the cmd.exe signing template, so a quote cannot break out of it. */
+const NO_QUOTES = /^[^"]+$/;
+
+function parseWindowsSigning(raw: Raw | undefined, errors: string[]): WindowsSigning | null {
+  if (!raw) return null;
+  const reader = new Reader(raw, "windows.signing.");
+  const signing: WindowsSigning = {
+    endpoint: reader.string("endpoint"),
+    account: reader.string("account"),
+    profile: reader.string("profile"),
+    publisher: reader.optionalString("publisher") ?? "Darkroom Engineering",
+  };
+  if (signing.endpoint && !/^https:\/\/[\w.-]+\/?$/.test(signing.endpoint))
+    reader.errors.push("windows.signing.endpoint: expected an https URL such as https://eus.codesigning.azure.net/");
+  for (const key of ["account", "profile"] as const)
+    if (signing[key] && !/^[\w-]+$/.test(signing[key]))
+      reader.errors.push(`windows.signing.${key}: expected letters, digits, - and _`);
+  if (!NO_QUOTES.test(signing.publisher)) reader.errors.push("windows.signing.publisher: must not contain quotes");
+  reader.rejectUnknown(["endpoint", "account", "profile", "publisher"]);
+  errors.push(...reader.errors);
+  return signing;
+}
+
+function parseWindowsRelease(raw: Raw | undefined, errors: string[]): WindowsRelease {
+  if (!raw) {
+    errors.push('windows.release: expected { "repo": "owner/name", "tag": "..." }');
+    return { repo: "", tag: "" };
+  }
+  const reader = new Reader(raw, "windows.release.");
+  const release: WindowsRelease = { repo: reader.string("repo"), tag: reader.string("tag") };
+  if (release.repo && !/^[\w.-]+\/[\w.-]+$/.test(release.repo))
+    reader.errors.push("windows.release.repo: expected owner/name");
+  reader.rejectUnknown(["repo", "tag"]);
+  errors.push(...reader.errors);
+  return release;
+}
+
+const parseWindows = (raw: Raw, errors: string[]): WindowsConfig =>
+  parseTarget(
+    raw,
+    "windows",
+    errors,
+    (reader) => {
+      const packId = reader.string("packId");
+      if (packId && !/^[A-Za-z0-9][\w.-]*$/.test(packId))
+        reader.errors.push("windows.packId: expected letters, digits, ., - and _");
+      const runtime = reader.optionalString("runtime") ?? "win-x64";
+      if (!(WINDOWS_RUNTIMES as readonly string[]).includes(runtime))
+        reader.errors.push(`windows.runtime: expected ${WINDOWS_RUNTIMES.join(", ")}`);
+      const vpk = reader.string("vpk");
+      if (vpk && !/^\d+\.\d+\.\d+$/.test(vpk)) reader.errors.push('windows.vpk: expected a version such as "1.2.161"');
+      const packTitle = reader.optionalString("packTitle") ?? packId;
+      if (packTitle && !NO_QUOTES.test(packTitle)) reader.errors.push("windows.packTitle: must not contain quotes");
+      return {
+        publish: reader.string("publish"),
+        publishDir: reader.string("publishDir"),
+        packId,
+        packTitle,
+        mainExe: reader.string("mainExe"),
+        runtime: runtime as WindowsConfig["runtime"],
+        channel: reader.optionalString("channel") ?? "win",
+        vpk,
+        workflow: reader.optionalString("workflow") ?? "ship-windows.yml",
+        release: parseWindowsRelease(reader.object("release"), errors),
+        signing: parseWindowsSigning(reader.object("signing"), errors),
+      };
+    },
+    [
+      "publish",
+      "publishDir",
+      "packId",
+      "packTitle",
+      "mainExe",
+      "runtime",
+      "channel",
+      "vpk",
+      "workflow",
+      "release",
+      "signing",
+    ],
   );
 
 const ARCHITECTURES = ["arm64", "x86_64"];
@@ -576,7 +696,7 @@ export function parseConfig(text: string, root: string): ShipConfig {
   const none = () => ({});
   if (mac) config.mac = parseMacDirect(mac, config.name, errors);
   if (macAppStore) config.macAppStore = parseMac(macAppStore, "macAppStore", errors);
-  if (windows) config.windows = parseTarget(windows, "windows", errors, none);
+  if (windows) config.windows = parseWindows(windows, errors);
   if (linux) config.linux = parseTarget(linux, "linux", errors, none);
   if (tauri) config.tauri = parseTarget(tauri, "tauri", errors, none);
   if (npm)
