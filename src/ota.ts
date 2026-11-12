@@ -50,22 +50,52 @@ async function atMain(root: string, head: string): Promise<Verdict> {
   );
 }
 
-async function readRuntime(root: string, appJson: string): Promise<string> {
-  let raw: unknown;
+/** `expo.runtimeVersion` in app.json at `rev`; undefined when the file is absent there. Unparseable JSON throws. */
+async function runtimeAt(root: string, appJson: string, rev: string): Promise<unknown> {
+  let text: string;
   try {
-    raw = JSON.parse(await git(root, "show", `HEAD:${appJson}`));
+    text = await git(root, "show", `${rev}:${appJson}`);
   } catch {
-    throw new Error(`cannot read ${appJson} at HEAD`);
+    return undefined;
   }
-  const runtime = (raw as { expo?: { runtimeVersion?: unknown } } | null)?.expo?.runtimeVersion;
+  try {
+    return (JSON.parse(text) as { expo?: { runtimeVersion?: unknown } } | null)?.expo?.runtimeVersion;
+  } catch {
+    throw new Error(`${appJson} at ${rev.slice(0, 7)} is not valid JSON, so the runtimeVersion history is unknown`);
+  }
+}
+
+async function readRuntime(root: string, appJson: string): Promise<string> {
+  const runtime = await runtimeAt(root, appJson, "HEAD");
   if (typeof runtime !== "string" || !runtime)
-    throw new Error(`${appJson} has no literal expo.runtimeVersion string; ship update needs one`);
+    throw new Error(`${appJson} has no literal expo.runtimeVersion string at HEAD; ship update needs one`);
   return runtime;
 }
 
-/** The newest commit that added or removed `"runtimeVersion": "<runtime>"` in app.json, as the pickaxe finds it. */
-const runtimeCommit = (root: string, appJson: string, runtime: string) =>
-  git(root, "log", "-1", "--format=%H", `-S"runtimeVersion": "${runtime}"`, "--", appJson);
+/**
+ * The commit that set the current runtimeVersion: the oldest commit of the newest unbroken run of app.json
+ * revisions whose parsed value is `runtime`. Comparing parsed values keeps a reformat of app.json from moving the
+ * baseline past earlier native changes. Fails closed when history cannot establish it.
+ */
+async function runtimeCommit(root: string, appJson: string, runtime: string): Promise<string> {
+  const commits = (await git(root, "log", "--format=%H", "--", appJson)).split("\n").filter(Boolean);
+  let since: string | undefined;
+  for (const commit of commits) {
+    if ((await runtimeAt(root, appJson, commit)) !== runtime) return requireFound(since, runtime);
+    since = commit;
+  }
+  // The run reaches the first commit in reach; in a shallow clone that is a cut, not where the value was set.
+  if ((await git(root, "rev-parse", "--is-shallow-repository")) === "true")
+    throw new Error(
+      `the clone is shallow, so the commit that set runtimeVersion ${runtime} is out of reach; fetch the full history`,
+    );
+  return requireFound(since, runtime);
+}
+
+function requireFound(since: string | undefined, runtime: string): string {
+  if (!since) throw new Error(`cannot find the commit that set runtimeVersion ${runtime}`);
+  return since;
+}
 
 function envFiles(dir: string): string[] {
   if (!existsSync(dir)) return [];
@@ -77,12 +107,14 @@ function envFiles(dir: string): string[] {
 
 /**
  * Gitignored env files are invisible to the clean-tree check but are inlined into the bundle, so each one must
- * leave the variable unset or point it at the expected value.
+ * leave the variable unset or point it at the expected value. An empty value is a value, not unset.
  */
 export function checkEnv(dir: string, check: { key: string; value: string }): Verdict {
   const wrong = envFiles(dir).flatMap((file) => {
     const value = readEnvFile(file)[check.key];
-    return value && value !== check.value ? [`${file} sets ${check.key} to ${value}, not ${check.value}`] : [];
+    return value !== undefined && value !== check.value
+      ? [`${file} sets ${check.key} to "${value}", not ${check.value}`]
+      : [];
   });
   return verdict(`env files set ${check.key} to ${check.value}`, wrong.length ? wrong.join("\n") : null);
 }
@@ -106,7 +138,6 @@ export async function checkOta(
   try {
     runtime = await readRuntime(root, appJson);
     const since = await runtimeCommit(root, appJson, runtime);
-    if (!since) throw new Error(`cannot find the commit that set runtimeVersion ${runtime}`);
     verdicts.push(verdict(`runtimeVersion ${runtime} set in ${since.slice(0, 7)}`));
     const changed = (await git(root, "diff", "--name-only", since, "HEAD", "--", ...update.nativeInputs))
       .split("\n")

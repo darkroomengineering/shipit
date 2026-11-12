@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { update } from "./commands/update.ts";
 import { parseConfig, type ShipConfig } from "./config.ts";
 import { git } from "./git.ts";
+import { checkOta } from "./ota.ts";
 
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), "shipit-ota-")));
 const calls = join(tmp, "calls.log");
@@ -40,9 +41,12 @@ const shipJson = (extra: Record<string, unknown> = {}) => ({
 beforeAll(async () => {
   const bin = join(tmp, "bin");
   mkdirSync(bin);
-  // Stand in for bunx (eas-cli) and bun (install): each records its folder and arguments.
+  // Stand in for bunx (eas-cli) and bun (install): each records its folder and arguments. With DIRTY_ON_INSTALL
+  // set, the install also appends to that file, as an install script might.
+  const dirty = `if [ -n "$DIRTY_ON_INSTALL" ]; then echo dirty >> "$DIRTY_ON_INSTALL"; fi\n`;
   for (const name of ["bunx", "bun"]) {
-    writeFileSync(join(bin, name), `#!/bin/sh\necho "${name} $(pwd -P) $*" >> "${calls}"\n`);
+    const script = `#!/bin/sh\necho "${name} $(pwd -P) $*" >> "${calls}"\n${name === "bun" ? dirty : ""}`;
+    writeFileSync(join(bin, name), script);
     chmodSync(join(bin, name), 0o755);
   }
   Object.assign(process.env, {
@@ -234,11 +238,52 @@ describe("ship update", () => {
     await refuses(config, "no native inputs changed since then");
   });
 
-  test("refuses when no commit set the runtimeVersion as written", async () => {
+  const compact = (runtime: string) =>
+    `${JSON.stringify({ expo: { name: "Demo", version: "1.0.0", runtimeVersion: runtime } })}\n`;
+  const bumpCommit = (root: string) => git(root, "log", "-1", "--format=%h", "--grep", "bump runtimeVersion");
+  const baseline = async (config: ShipConfig) => {
+    const ios = config.ios;
+    if (!ios?.update) throw new Error("no ios.update");
+    const { verdicts } = await checkOta(config.root, ios, ios.update, false);
+    return verdicts.find((verdict) => verdict.guard.startsWith("runtimeVersion"));
+  };
+
+  test("a reformat of app.json does not move the runtimeVersion baseline", async () => {
     const config = app();
-    const compact = `${JSON.stringify({ expo: { name: "Demo", version: "1.0.0", runtimeVersion: "1.0.3" } })}\n`;
-    await commit(config.root, { "apps/mobile/app.json": compact }, "chore: compact app.json");
+    await commit(config.root, { "apps/mobile/app.json": compact("1.0.1") }, "style: compact app.json");
+    expect((await baseline(config))?.guard).toBe(`runtimeVersion 1.0.1 set in ${await bumpCommit(config.root)}`);
+  });
+
+  test("a native change before a reformat of app.json is still refused", async () => {
+    const config = app();
+    await commit(config.root, { "apps/mobile/modules/cam/ios/Cam.swift": "// v2\n" }, "feat: native");
+    await commit(config.root, { "apps/mobile/app.json": compact("1.0.1") }, "style: compact app.json");
+    await expect(publish(config, { dry: true })).rejects.toThrow("no native inputs changed since then");
+    expect(recorded()).toEqual([]);
+  });
+
+  test("a new runtimeVersion written in another format is a new baseline", async () => {
+    const config = app();
+    await commit(config.root, { "apps/mobile/modules/cam/ios/Cam.swift": "// v2\n" }, "feat: native");
+    await commit(config.root, { "apps/mobile/app.json": compact("1.0.2") }, "chore: bump runtimeVersion again");
+    expect((await baseline(config))?.guard).toBe(`runtimeVersion 1.0.2 set in ${await bumpCommit(config.root)}`);
+  });
+
+  test("fails closed when a revision of app.json in the run cannot be parsed", async () => {
+    const config = app();
+    await commit(config.root, { "apps/mobile/app.json": "{ broken\n" }, "chore: break app.json");
+    await commit(config.root, { "apps/mobile/app.json": appJson("1.0.1") }, "fix: restore app.json");
     await refuses(config, "refusing to publish: runtimeVersion commit found");
+    expect((await baseline(config))?.refusal).toContain("is not valid JSON");
+  });
+
+  test("fails closed in a shallow clone that cannot reach the runtimeVersion commit", async () => {
+    const source = app();
+    const root = join(dirname(source.root), "shallow");
+    await git(dirname(source.root), "clone", "-q", "--depth", "1", `file://${dirname(source.root)}/origin.git`, root);
+    const config = parseConfig(JSON.stringify(shipJson()), root);
+    await refuses(config, "refusing to publish: runtimeVersion commit found");
+    expect((await baseline(config))?.refusal).toContain("shallow");
   });
 
   test("refuses a runtimeVersion policy object", async () => {
@@ -260,6 +305,25 @@ describe("ship update", () => {
 
     put(config.root, "apps/mobile/.env.local", "EXPO_PUBLIC_API_URL='https://staging.example.com'\n");
     await refuses(config, `refusing to publish: env files set EXPO_PUBLIC_API_URL to ${PRODUCTION}`);
+  });
+
+  test("refuses an env file that sets the variable to an empty value", async () => {
+    const config = app();
+    put(config.root, "apps/mobile/.env.local", "EXPO_PUBLIC_API_URL=\n");
+    await refuses(config, `env files set EXPO_PUBLIC_API_URL to ${PRODUCTION}`);
+    put(config.root, "apps/mobile/.env.local", "OTHER=1\n");
+    await publish(config, { dry: true });
+  });
+
+  test("checks every guard again after bun install, before publishing", async () => {
+    const config = app();
+    process.env.DIRTY_ON_INSTALL = join(config.root, "src/index.ts");
+    try {
+      await expect(publish(config)).rejects.toThrow("changed during bun install: clean working tree");
+    } finally {
+      delete process.env.DIRTY_ON_INSTALL;
+    }
+    expect(recorded()).toEqual([`bun ${config.root} install --frozen-lockfile`]);
   });
 
   test("reports every refusal at once", async () => {

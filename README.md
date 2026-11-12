@@ -158,10 +158,10 @@ Over-the-air updates are for JavaScript and asset changes only. Anything native 
 
 - the working tree has uncommitted or untracked changes, or a tracked file is marked assume-unchanged or skip-worktree;
 - `HEAD` is not `origin/main` after a fetch (a repository with no `origin` is refused);
-- a path in `nativeInputs` changed since the commit that set the current `expo.runtimeVersion` in `app.json`. That commit is the newest one whose diff adds or removes `"runtimeVersion": "<value>"` exactly as written, so keep `app.json` formatted with a space after the colon. `runtimeVersion` must be a literal string, not a policy;
-- with `envCheck`, a `.env*` file in the Expo project folder (except `*.example`) sets `key` to anything other than `value`. These files are gitignored, so the clean-tree check cannot see them, but Expo inlines them into the bundle.
+- a path in `nativeInputs` changed since the commit that set the current `expo.runtimeVersion` in `app.json`. That commit is found by parsing every revision of `app.json`: it is the oldest commit of the newest unbroken run with the current value, so reformatting `app.json` never moves it. A revision that is not valid JSON, or a shallow clone that cannot reach the commit, is refused. `runtimeVersion` must be a literal string, not a policy;
+- with `envCheck`, a `.env*` file in the Expo project folder (except `*.example`) sets `key` to anything other than `value`, including an empty value. These files are gitignored, so the clean-tree check cannot see them, but Expo inlines them into the bundle.
 
-Every guard runs and prints its result, so one run lists every problem. Then it runs `bun install --frozen-lockfile` and publishes with the message `what changed (<short sha>)`. `--dry-run` runs every guard and prints the install and publish it skipped. `SHIP_ALLOW_NATIVE_DIFF=1` publishes despite native changes, after you have confirmed none of the listed files changes the binary; the message gets ` [native-diff-override]`.
+Every guard runs and prints its result, so one run lists every problem. Then it runs `bun install --frozen-lockfile`, runs every guard again (and refuses if `HEAD` moved), and publishes with the message `what changed (<short sha>)`. `--dry-run` runs every guard and prints the install and publish it skipped. `SHIP_ALLOW_NATIVE_DIFF=1` publishes despite native changes, after you have confirmed none of the listed files changes the binary; the message gets ` [native-diff-override]`.
 
 ## Mac direct download
 
