@@ -4,7 +4,15 @@ import { openVersion } from "../appstore.ts";
 import { Asc } from "../asc.ts";
 import { buildAndroid } from "../build-android.ts";
 import { buildIos } from "../build-ios.ts";
-import { loadCredentials, type Platform, platformsOf, resolvePath, type ShipConfig } from "../config.ts";
+import {
+  lanesFor,
+  loadCredentials,
+  type Platform,
+  platformsOf,
+  resolvePath,
+  type ShipConfig,
+  type Target,
+} from "../config.ts";
 import {
   assertRepoRoot,
   copyIgnored,
@@ -26,7 +34,7 @@ import { distribute } from "../testflight.ts";
 import { readVersion, writeVersion } from "../version.ts";
 
 export interface BetaOptions {
-  platform?: Platform;
+  platform?: Target;
   dry: boolean;
   skipChecks: boolean;
   /** Dry runs only: build this ref instead of main, to test a branch before it lands. */
@@ -37,10 +45,7 @@ const WHAT_TO_TEST_LIMIT = 2000;
 
 /** Builds GitHub's main in a clean worktree and sends it to TestFlight and/or Play internal testing. */
 export async function beta(config: ShipConfig, options: BetaOptions) {
-  const requested = options.platform ? [options.platform] : platformsOf(config);
-  for (const platform of requested) {
-    if (!config[platform]) throw new Error(`ship.json has no ${platform} section`);
-  }
+  const requested = lanesFor(config, options.platform);
   if (options.ref && !options.dry) throw new Error("--ref only works with --dry-run; real builds ship main");
   await assertRepoRoot(config.root);
   const unlock = lock(config);

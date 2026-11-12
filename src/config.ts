@@ -36,6 +36,41 @@ export interface AndroidConfig {
   checks: string[];
 }
 
+/** A file that carries the version besides `version.file`: plain text, a JSON or YAML path, or a regex. */
+export interface VersionFileSpec extends VersionSpec {
+  /** Pattern whose first capture group is the version. */
+  regex?: string;
+}
+
+/** Fields every target without a lane accepts until its lane defines more. */
+export interface TargetConfig {
+  dir: string;
+  copy: string[];
+  checks: string[];
+}
+
+/** A Mac app built with Xcode: `mac` is signed and notarized for direct download, `macAppStore` goes to the store. */
+export interface MacConfig extends TargetConfig {
+  scheme: string;
+  bundleId: string;
+}
+
+export interface NpmConfig extends TargetConfig {
+  package: string;
+}
+
+export interface SecretSpec {
+  name: string;
+  /** Where the secret lives on disk; set this or `env`. */
+  path?: string;
+  /** The environment variable that carries it; set this or `path`. */
+  env?: string;
+  /** The 1Password item that holds it, such as `op://Incubator/nocam-play/credential`. */
+  onePassword: string | null;
+  /** How to get the secret back when it is lost. */
+  restoreHint: string | null;
+}
+
 export interface ShipConfig {
   /** Absolute path of the directory that holds ship.json (the git repository root). */
   root: string;
@@ -47,11 +82,39 @@ export interface ShipConfig {
   /** Repo-relative file of hand-written store release notes, read from main. */
   notesFile: string | null;
   credentials: string | null;
+  /** More files to stamp with the version. */
+  versionFiles: VersionFileSpec[];
+  /** Repo-relative changelog file. */
+  changelog: string | null;
+  secrets: SecretSpec[];
+  /** Commands `ship ci` runs in the checkout before any lane. */
+  gates: string[];
   ios?: IosConfig;
   android?: AndroidConfig;
+  mac?: MacConfig;
+  macAppStore?: MacConfig;
+  windows?: TargetConfig;
+  linux?: TargetConfig;
+  tauri?: TargetConfig;
+  npm?: NpmConfig;
 }
 
+/** Targets with a lane: ship can build and release them. */
 export type Platform = "ios" | "android";
+
+/** Targets ship.json accepts whose lanes do not exist yet. */
+export const PENDING_TARGETS = ["mac", "macAppStore", "windows", "linux", "tauri", "npm"] as const;
+export type PendingTarget = (typeof PENDING_TARGETS)[number];
+export type Target = Platform | PendingTarget;
+
+export const isTarget = (value: string): value is Target =>
+  value === "ios" || value === "android" || (PENDING_TARGETS as readonly string[]).includes(value);
+
+export class LaneNotImplementedError extends Error {
+  constructor(targets: readonly string[], hint = "") {
+    super(`${targets.join(", ")}: lane not implemented yet (INC-998/999/1000)${hint}`);
+  }
+}
 
 export function expandHome(path: string): string {
   const home = homedir();
@@ -116,6 +179,14 @@ class Reader {
     return [];
   }
 
+  objects(key: string): Raw[] {
+    const value = this.raw[key];
+    if (value === undefined) return [];
+    if (Array.isArray(value) && value.every(isObject)) return value;
+    this.fail(key, "an array of objects");
+    return [];
+  }
+
   object(key: string): Raw | undefined {
     const value = this.raw[key];
     if (value === undefined || value === null) return undefined;
@@ -147,6 +218,76 @@ function parseVersion(raw: Raw | undefined, errors: string[]): VersionSpec {
   errors.push(...reader.errors);
   return spec;
 }
+
+function parseVersionFile(raw: Raw, where: string, errors: string[]): VersionFileSpec {
+  const reader = new Reader(raw, where);
+  const spec: VersionFileSpec = { file: reader.string("file") };
+  const json = reader.optionalString("json");
+  const yaml = reader.optionalString("yaml");
+  const regex = reader.optionalString("regex");
+  if (json) spec.json = json;
+  if (yaml) spec.yaml = yaml;
+  if (regex) {
+    spec.regex = regex;
+    let groups = 0;
+    try {
+      // The empty alternative always matches, so the result's length counts the pattern's capture groups.
+      groups = (new RegExp(`(?:${regex})|`).exec("")?.length ?? 1) - 1;
+    } catch {
+      // An invalid pattern has no groups; the error below names it.
+    }
+    if (groups < 1) reader.errors.push(`${where}regex: expected a valid pattern with a capture group for the version`);
+  }
+  if ([json, yaml, regex].filter(Boolean).length > 1) reader.errors.push(`${where}: set one of json, yaml or regex`);
+  reader.rejectUnknown(["file", "json", "yaml", "regex"]);
+  errors.push(...reader.errors);
+  return spec;
+}
+
+function parseSecret(raw: Raw, where: string, errors: string[]): SecretSpec {
+  const reader = new Reader(raw, where);
+  const secret: SecretSpec = {
+    name: reader.string("name"),
+    onePassword: reader.optionalString("onePassword"),
+    restoreHint: reader.optionalString("restoreHint"),
+  };
+  const path = reader.optionalString("path");
+  const env = reader.optionalString("env");
+  if (path) secret.path = path;
+  if (env) secret.env = env;
+  if (Boolean(path) === Boolean(env)) reader.errors.push(`${where}: set exactly one of path or env`);
+  reader.rejectUnknown(["name", "path", "env", "onePassword", "restoreHint"]);
+  errors.push(...reader.errors);
+  return secret;
+}
+
+function parseTarget<T extends object>(
+  raw: Raw,
+  name: string,
+  errors: string[],
+  extra: (reader: Reader) => T,
+  extraKeys: string[] = [],
+): TargetConfig & T {
+  const reader = new Reader(raw, `${name}.`);
+  const config = {
+    dir: reader.optionalString("dir") ?? ".",
+    copy: reader.strings("copy"),
+    checks: reader.strings("checks"),
+    ...extra(reader),
+  };
+  reader.rejectUnknown(["dir", "copy", "checks", ...extraKeys]);
+  errors.push(...reader.errors);
+  return config;
+}
+
+const parseMac = (raw: Raw, name: string, errors: string[]): MacConfig =>
+  parseTarget(
+    raw,
+    name,
+    errors,
+    (reader) => ({ scheme: reader.string("scheme"), bundleId: reader.string("bundleId") }),
+    ["scheme", "bundleId"],
+  );
 
 function parseIos(raw: Raw, errors: string[]): IosConfig {
   const reader = new Reader(raw, "ios.");
@@ -221,12 +362,31 @@ export function parseConfig(text: string, root: string): ShipConfig {
     notesPaths: top.strings("notesPaths"),
     notesFile: top.optionalString("notesFile"),
     credentials: top.optionalString("credentials"),
+    versionFiles: top.objects("versionFiles").map((raw, i) => parseVersionFile(raw, `versionFiles[${i}].`, errors)),
+    changelog: top.optionalString("changelog"),
+    secrets: top.objects("secrets").map((raw, i) => parseSecret(raw, `secrets[${i}].`, errors)),
+    gates: top.strings("gates"),
   };
   const ios = top.object("ios");
   const android = top.object("android");
   if (ios) config.ios = parseIos(ios, errors);
   if (android) config.android = parseAndroid(android, errors);
-  if (!ios && !android) errors.push("ios or android: configure at least one platform");
+  const mac = top.object("mac");
+  const macAppStore = top.object("macAppStore");
+  const windows = top.object("windows");
+  const linux = top.object("linux");
+  const tauri = top.object("tauri");
+  const npm = top.object("npm");
+  const none = () => ({});
+  if (mac) config.mac = parseMac(mac, "mac", errors);
+  if (macAppStore) config.macAppStore = parseMac(macAppStore, "macAppStore", errors);
+  if (windows) config.windows = parseTarget(windows, "windows", errors, none);
+  if (linux) config.linux = parseTarget(linux, "linux", errors, none);
+  if (tauri) config.tauri = parseTarget(tauri, "tauri", errors, none);
+  if (npm)
+    config.npm = parseTarget(npm, "npm", errors, (reader) => ({ package: reader.string("package") }), ["package"]);
+  if (!targetsOf(config).length)
+    errors.push(`targets: configure at least one platform (${["ios", "android", ...PENDING_TARGETS].join(", ")})`);
   top.rejectUnknown([
     "name",
     "nightly",
@@ -235,8 +395,13 @@ export function parseConfig(text: string, root: string): ShipConfig {
     "notesPaths",
     "notesFile",
     "credentials",
+    "versionFiles",
+    "changelog",
+    "secrets",
+    "gates",
     "ios",
     "android",
+    ...PENDING_TARGETS,
   ]);
   errors.push(...top.errors);
   if (errors.length) throw new Error(`${join(root, "ship.json")}:\n  ${errors.join("\n  ")}`);
@@ -253,6 +418,30 @@ export const platformsOf = (config: ShipConfig): Platform[] => [
   ...(config.ios ? (["ios"] as const) : []),
   ...(config.android ? (["android"] as const) : []),
 ];
+
+const targetsOf = (config: ShipConfig): Target[] => [
+  ...platformsOf(config),
+  ...PENDING_TARGETS.filter((target) => config[target]),
+];
+
+/**
+ * The platforms a command runs: the requested one, or every configured one. A target with no lane fails, and so
+ * does a run of every target when one of them has no lane, so a half release never passes for a whole one.
+ */
+export function lanesFor(config: ShipConfig, requested?: Target): Platform[] {
+  if (requested && requested !== "ios" && requested !== "android") throw new LaneNotImplementedError([requested]);
+  if (requested) {
+    if (!config[requested]) throw new Error(`ship.json has no ${requested} section`);
+    return [requested];
+  }
+  const pending = PENDING_TARGETS.filter((target) => config[target]);
+  if (pending.length)
+    throw new LaneNotImplementedError(
+      pending,
+      platformsOf(config).length ? `; pass ${platformsOf(config).join(" or ")} to ship only that` : "",
+    );
+  return platformsOf(config);
+}
 
 export interface AscCredentials {
   keyId: string;

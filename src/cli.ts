@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { loadConfig, type Platform } from "./config.ts";
+import { isTarget, loadConfig, PENDING_TARGETS, type Target } from "./config.ts";
 import { BusyError } from "./git.ts";
 import { errorMessage } from "./log.ts";
 
@@ -37,11 +37,13 @@ if (!command || values.help || command === "help") {
 const dry = values["dry-run"];
 const root = resolve(values.C ?? process.cwd());
 
-function platformArg(): Platform | undefined {
+function platformArg(): Target | undefined {
   const [platform] = rest;
   if (platform === undefined) return undefined;
-  if (platform !== "ios" && platform !== "android")
-    throw new Error(`unknown platform "${platform}": use ios or android`);
+  if (!isTarget(platform))
+    throw new Error(
+      `unknown platform "${platform}": use ios or android (${PENDING_TARGETS.join(", ")} have no lane yet)`,
+    );
   return platform;
 }
 

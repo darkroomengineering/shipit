@@ -93,6 +93,15 @@ At the repo root. Unknown keys are rejected so typos show up.
 | `android.dir` | Folder with `gradlew`. |
 | `android.versionCodeProperty` | Gradle property that receives the version code (`-P<name>=<code>`). |
 | `android.playKey` | Play service account JSON. Without it a bundle is built and left in `~/Desktop/<Name>-Android/` for a manual upload. |
+| `versionFiles` | More files that carry the version: `{ "file", "json" }`, `{ "file", "yaml" }`, `{ "file", "regex" }` (the first capture group is the version) or `{ "file" }` for a plain file. Validated only; nothing stamps them yet. |
+| `changelog` | Repo-relative changelog file. Validated only. |
+| `secrets` | `{ "name", "path" or "env", "onePassword", "restoreHint" }` for each secret the release needs: where it lives, the 1Password item that holds it, and how to get it back. Validated only. |
+| `gates` | Shell commands `ship ci` runs in the checkout before any lane. |
+| `mac`, `macAppStore` | Mac app for direct download or the Mac App Store: `scheme`, `bundleId`, and optional `dir`, `copy`, `checks`. No lane yet. |
+| `windows`, `linux`, `tauri` | Optional `dir`, `copy`, `checks`. No lane yet. |
+| `npm` | `package`, and optional `dir`, `copy`, `checks`. No lane yet. |
+
+A config needs at least one target. Asking for a target with no lane (`ship beta mac`) fails with "lane not implemented yet (INC-998/999/1000)", and so does a command run for every target when the config has one of them, so half an app is never released by accident; pass `ios` or `android` to run only those.
 
 ### Release notes
 
