@@ -56,7 +56,8 @@ export async function beta(config: ShipConfig, options: BetaOptions) {
   }
 }
 
-async function runBeta(config: ShipConfig, requested: Platform[], options: BetaOptions) {
+/** The beta without taking the lock, for commands that already hold it. */
+export async function runBeta(config: ShipConfig, requested: Platform[], options: BetaOptions) {
   const { dry } = options;
   let platforms = requested;
   const { ios } = config;
