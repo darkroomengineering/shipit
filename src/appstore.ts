@@ -98,7 +98,7 @@ export async function releaseStore(config: ShipConfig, asc: Asc, lane: StoreLane
   }
 
   const [build] = await asc.list(
-    `/builds?filter[app]=${app.id}&filter[preReleaseVersion.version]=${version}&filter[processingState]=VALID&filter[expired]=false&sort=-uploadedDate&limit=1&fields[builds]=version,uploadedDate`,
+    `/builds?filter[app]=${app.id}&filter[preReleaseVersion.version]=${version}&filter[preReleaseVersion.platform]=${platform}&filter[processingState]=VALID&filter[expired]=false&sort=-uploadedDate&limit=1&fields[builds]=version,uploadedDate`,
   );
   const attached = current
     ? (await asc.api<{ data: Resource | null }>(`/appStoreVersions/${current.id}/build`)).data

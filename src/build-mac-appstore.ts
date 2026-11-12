@@ -78,7 +78,7 @@ export async function shipMacAppStore(input: MacAppStoreBuild): Promise<MacAppSt
   say(`== preflight ${version} (${build})`);
   stop(existsSync(profile) ? [] : [`macAppStore.provisioningProfile: ${profile} does not exist`]);
   const auth = altoolAuth(config, dry);
-  const identities = await storeIdentities(r, env);
+  const identities = await storeIdentities(r, env, credentialTeam(config));
 
   // 2. Build unsigned.
   say("== build");
@@ -197,8 +197,21 @@ const INSTALLER_KINDS = ["3rd Party Mac Developer Installer", "Mac Installer Dis
  * The team's store signing identities, by name, as appstore.sh signs. APP_STORE_IDENTITY and
  * APP_STORE_INSTALLER_IDENTITY override the keychain lookup.
  */
-async function storeIdentities(r: Runner, env: NodeJS.ProcessEnv): Promise<{ app: string; installer: string }> {
-  const team = env.APPLE_TEAM_ID ?? DEFAULT_TEAM_ID;
+// The credentials file can name APPLE_TEAM_ID; an unreadable file leaves the default team.
+function credentialTeam(config: ShipConfig): string {
+  try {
+    return loadCredentials(config).teamId;
+  } catch {
+    return DEFAULT_TEAM_ID;
+  }
+}
+
+async function storeIdentities(
+  r: Runner,
+  env: NodeJS.ProcessEnv,
+  credentialsTeam: string,
+): Promise<{ app: string; installer: string }> {
+  const team = env.APPLE_TEAM_ID ?? credentialsTeam;
   let app = env.APP_STORE_IDENTITY;
   let installer = env.APP_STORE_INSTALLER_IDENTITY;
   if (app && installer) return { app, installer };
