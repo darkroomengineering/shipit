@@ -58,9 +58,9 @@ Every lane runs the same steps in order:
 
 1. **Preflight:** the tree is clean, HEAD is main, the build number is higher than the published one, and `CHANGELOG.md` has a section for this version.
 2. **Stamp** the version and build number.
-3. **Build** and **sign**.
+3. **Build** and **sign**. Mac apps build with Xcode or with their own build command (codigo's `scripts/bundle.sh` runs `cargo`); ship signs the result either way.
 4. **Verify** the result before anything is uploaded (see gates below).
-5. **Package and upload:** notarize and staple on Mac, upload to the store for phones.
+5. **Package and upload:** notarize and staple for Mac direct download, a signed installer package for the Mac App Store, upload to the store for phones.
 6. **Draft.** Every platform's output goes into one draft release.
 7. **Finalize** only when every platform passed: publish, update the stable download names and the update feeds, then tag.
 
@@ -77,7 +77,7 @@ A platform that fails leaves a draft nobody can see, so "latest" never points at
 ## 4. Channels
 
 - **Candidate:** a private draft for every build, kept for rollback (keep the newest five).
-- **Beta:** TestFlight (internal-only by default, external with a flag), the Play internal track, and a Sparkle beta feed for Mac.
+- **Beta:** TestFlight (internal-only by default, external with a flag) for iOS and the Mac App Store, the Play internal track, and a Sparkle beta feed for Mac.
 - **Production:** `ship promote <build>` moves a beta to production. `ship rollback <build>` puts the previous build back and restores the previous feed.
 
 ## 5. Updates
@@ -101,6 +101,7 @@ Existing update feed URLs and update signing keys never change, like bundle IDs.
 ## 7. Signing and secrets
 
 - **Mac:** Developer ID, notarized and stapled, under team ZNHHMX2RP6.
+- **Mac App Store:** Apple Distribution for the app and 3rd Party Mac Developer Installer for the package, with the app's provisioning profile embedded, under the same team.
 - **Windows:** Azure Artifact Signing, which signs in CI without a stored certificate.
 - **Linux:** updater signatures only.
 - CI secrets live in a GitHub `release` environment, set once for the org where possible.

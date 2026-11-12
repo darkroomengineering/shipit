@@ -35,6 +35,12 @@ interface Listing {
 
 const versionFields = "fields[appStoreVersions]=versionString,appStoreState";
 
+/** The lanes that ship to App Store Connect. */
+export type StoreLane = "ios" | "macAppStore";
+
+/** App Store Connect's name for each store lane's platform. */
+export const STORE_PLATFORM: Record<StoreLane, "IOS" | "MAC_OS"> = { ios: "IOS", macAppStore: "MAC_OS" };
+
 /**
  * Makes sure the version on GitHub's main can still take builds. App Store Connect closes a version to new
  * uploads once App Review approves it, so an approved or released version gets a pull request that bumps its
@@ -45,11 +51,12 @@ export async function openVersion(
   asc: Asc,
   appId: string,
   dry: boolean,
+  lane: StoreLane = "ios",
 ): Promise<{ version: string; bumped: boolean }> {
   await fetchMain(config.root);
   const version = await mainVersion(config);
   const [current] = await asc.list(
-    `/apps/${appId}/appStoreVersions?filter[platform]=IOS&filter[versionString]=${version}&${versionFields}`,
+    `/apps/${appId}/appStoreVersions?filter[platform]=${STORE_PLATFORM[lane]}&filter[versionString]=${version}&${versionFields}`,
   );
   const state = attr(current, "appStoreState");
   if (!state || OPEN.has(state)) return { version, bumped: false };
@@ -67,22 +74,26 @@ export async function openVersion(
 /**
  * Sends the newest TestFlight build of the current version to App Review, with release notes from `notesFile` or
  * the feat/fix commits since the live build. A submission still waiting for or in review is withdrawn and replaced, so each
- * release carries every build since the live one.
+ * release carries every build since the live one. iOS submits the `ios` app; macAppStore the `macAppStore` app's
+ * macOS version, the same way, without a store listing.
  */
-export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean, unattended = false) {
-  const ios = config.ios;
-  if (!ios) throw new Error("ship.json has no ios section");
-  const app = await asc.app(ios.bundleId);
-  const say = (message: string) => log(`ios: ${message}`);
+export async function releaseStore(config: ShipConfig, asc: Asc, lane: StoreLane, dry: boolean, unattended = false) {
+  const section = config[lane];
+  if (!section) throw new Error(`ship.json has no ${lane} section`);
+  const app = await asc.app(section.bundleId);
+  const platform = STORE_PLATFORM[lane];
+  const say = (message: string) => log(`${lane}: ${message}`);
 
-  // The version moves on only when `ship beta` builds iOS after an approval, so a live version with no new build just waits.
+  // The version moves on only when `ship beta` builds the lane after an approval, so a live version with no new build just waits.
   await fetchMain(config.root);
   const version = await mainVersion(config);
-  const versions = await asc.list(`/apps/${app.id}/appStoreVersions?filter[platform]=IOS&limit=20&${versionFields}`);
+  const versions = await asc.list(
+    `/apps/${app.id}/appStoreVersions?filter[platform]=${platform}&limit=20&${versionFields}`,
+  );
   const current = versions.find((candidate) => attr(candidate, "versionString") === version);
   const state = attr(current, "appStoreState");
   if (state && !OPEN.has(state)) {
-    say(`${version} is ${state}; the next iOS build starts a new version`);
+    say(`${version} is ${state}; the next ${lane} build starts a new version`);
     return;
   }
 
@@ -107,7 +118,7 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean, una
   // GitHub's main.
   // It is read before anything changes in App Store Connect, so a missing or malformed file cannot leave a
   // withdrawn submission behind.
-  const listing = await readListing(config, ios);
+  const listing = lane === "ios" && config.ios ? await readListing(config, config.ios) : {};
 
   const live = versions.find((candidate) => attr(candidate, "appStoreState") === "READY_FOR_SALE");
   const liveBuild = live
@@ -118,7 +129,7 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean, una
       ).data
     : null;
   const notes =
-    (await fileNotes(config, "ios", version, 3900)) ??
+    (await fileNotes(config, lane, version, 3900)) ??
     (await releaseNotes(config, {
       from: attr(liveBuild ?? undefined, "version"),
       to: buildNumber,
@@ -133,7 +144,7 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean, una
   }
 
   if (current && (state === "WAITING_FOR_REVIEW" || state === "IN_REVIEW")) {
-    await withdraw(asc, app.id, current.id, version, state);
+    await withdraw(asc, app.id, platform, current.id, version, state);
     say(`withdrew ${version} build ${attr(attached ?? undefined, "version") ?? "?"} from review`);
   }
   // A rejection leaves its submission in UNRESOLVED_ISSUES holding the version. It is cancelled so the fresh
@@ -142,7 +153,7 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean, una
   // ceiling: unverified against Apple's reviewSubmissions docs. upgrade: resolve the rejected item and resubmit the
   // same submission if cancelling it is refused.
   if (current && (state === "REJECTED" || state === "METADATA_REJECTED")) {
-    const canceled = await cancelHolding(asc, app.id, current.id, ["UNRESOLVED_ISSUES"]);
+    const canceled = await cancelHolding(asc, app.id, platform, current.id, ["UNRESOLVED_ISSUES"]);
     if (canceled) say(`cancelled ${canceled} unresolved review submission(s) holding ${version}`);
   }
   const target =
@@ -153,7 +164,7 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean, una
         body: JSON.stringify({
           data: {
             type: "appStoreVersions",
-            attributes: { platform: "IOS", versionString: version },
+            attributes: { platform, versionString: version },
             relationships: { app: { data: { type: "apps", id: app.id } } },
           },
         }),
@@ -161,7 +172,7 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean, una
     ).data;
 
   // App Store Connect refuses whatsNew on an app's first version, so a never-released app submits without notes.
-  await submit(asc, app.id, target.id, version, build, live ? notes : undefined, listing);
+  await submit(asc, app.id, lane, target.id, version, build, live ? notes : undefined, listing);
 }
 
 async function readListing(config: ShipConfig, ios: IosConfig): Promise<Listing> {
@@ -179,9 +190,15 @@ async function readListing(config: ShipConfig, ios: IosConfig): Promise<Listing>
 }
 
 /** Cancels the review submissions in `states` whose items include this version, and returns how many. */
-async function cancelHolding(asc: Asc, appId: string, versionId: string, states: string[]): Promise<number> {
+async function cancelHolding(
+  asc: Asc,
+  appId: string,
+  platform: string,
+  versionId: string,
+  states: string[],
+): Promise<number> {
   const open = await asc.list(
-    `/reviewSubmissions?filter[app]=${appId}&filter[platform]=IOS&filter[state]=${states.join(",")}`,
+    `/reviewSubmissions?filter[app]=${appId}&filter[platform]=${platform}&filter[state]=${states.join(",")}`,
   );
   let canceled = 0;
   for (const submission of open) {
@@ -199,8 +216,12 @@ async function cancelHolding(asc: Asc, appId: string, versionId: string, states:
  * Withdraws the review submission that holds this version, which makes the version editable again. Other
  * submissions for the app (In-App Events, say) are separate and stay in review.
  */
-async function withdraw(asc: Asc, appId: string, versionId: string, version: string, state: string) {
-  const canceled = await cancelHolding(asc, appId, versionId, ["WAITING_FOR_REVIEW", "IN_REVIEW", "UNRESOLVED_ISSUES"]);
+async function withdraw(asc: Asc, appId: string, platform: string, versionId: string, version: string, state: string) {
+  const canceled = await cancelHolding(asc, appId, platform, versionId, [
+    "WAITING_FOR_REVIEW",
+    "IN_REVIEW",
+    "UNRESOLVED_ISSUES",
+  ]);
   if (!canceled) throw new Error(`${version} is ${state}, but no active review submission holds it`);
   let now = state;
   for (let i = 0; i < 40 && now !== "DEVELOPER_REJECTED" && now !== "PREPARE_FOR_SUBMISSION"; i++) {
@@ -218,12 +239,14 @@ async function withdraw(asc: Asc, appId: string, versionId: string, version: str
 async function submit(
   asc: Asc,
   appId: string,
+  lane: StoreLane,
   versionId: string,
   version: string,
   build: Resource,
   whatsNew: string | undefined,
   listing: Listing,
 ) {
+  const platform = STORE_PLATFORM[lane];
   await asc.patch(`/appStoreVersions/${versionId}/relationships/build`, { data: { type: "builds", id: build.id } });
   const localizations = await asc.list(`/appStoreVersions/${versionId}/appStoreVersionLocalizations`);
   // Apps listed only in another language (es-ES, say) have no en-US; the listing goes to whichever they have.
@@ -243,13 +266,13 @@ async function submit(
       data: { type: "appStoreVersionLocalizations", id: localization.id, attributes: { whatsNew } },
     });
   }
-  log(`ios: attached build ${attr(build, "version")}${whatsNew ? " and release notes" : ""} to ${version}`);
+  log(`${lane}: attached build ${attr(build, "version")}${whatsNew ? " and release notes" : ""} to ${version}`);
 
   // Resume the draft that already holds this version, or an empty one, both left by runs that failed partway;
   // otherwise open a new one, so a draft someone started by hand is never submitted along with it. Apple caps
   // open drafts at 5, so failed runs must not each leave a new empty one behind.
   const drafts = await asc.list(
-    `/reviewSubmissions?filter[app]=${appId}&filter[platform]=IOS&filter[state]=READY_FOR_REVIEW`,
+    `/reviewSubmissions?filter[app]=${appId}&filter[platform]=${platform}&filter[state]=READY_FOR_REVIEW`,
   );
   let submission: Resource | undefined;
   let empty: Resource | undefined;
@@ -265,7 +288,7 @@ async function submit(
         (await asc.post("/reviewSubmissions", {
           data: {
             type: "reviewSubmissions",
-            attributes: { platform: "IOS" },
+            attributes: { platform },
             relationships: { app: { data: { type: "apps", id: appId } } },
           },
         })) as { data: Resource }
@@ -286,5 +309,5 @@ async function submit(
   const state = (
     await asc.api<{ data: Resource }>(`/appStoreVersions/${versionId}?fields[appStoreVersions]=appStoreState`)
   ).data;
-  log(`ios: submitted ${version} for review: ${attr(state, "appStoreState")}`);
+  log(`${lane}: submitted ${version} for review: ${attr(state, "appStoreState")}`);
 }

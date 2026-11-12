@@ -1,7 +1,15 @@
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { DEFAULT_TEAM_ID, loadCredentials, type MacDirectConfig, type ShipConfig, slug } from "./config.ts";
+import {
+  DEFAULT_TEAM_ID,
+  loadCredentials,
+  type MacDirectConfig,
+  type MacSource,
+  resolvePath,
+  type ShipConfig,
+  slug,
+} from "./config.ts";
 import { errorMessage, log, run, warn } from "./log.ts";
 import { hostFor } from "./mac-host.ts";
 import {
@@ -127,13 +135,81 @@ async function download(url: string, file: string) {
   await Bun.write(file, response);
 }
 
+/** The first `security find-identity` line of one of these certificate kinds for the team. */
+export const identityLine = (output: string, team: string, kinds: string[]): string | undefined =>
+  output.split("\n").find((row) => kinds.some((kind) => row.includes(`"${kind}: `)) && row.includes(`(${team})`));
+
 /** browsee's Developer ID lookup: the first "Developer ID Application" identity of the team in `security` output. */
 export function developerIdentity(output: string, team: string): string | undefined {
-  const line = output
-    .split("\n")
-    .find((row) => row.includes('"Developer ID Application: ') && row.includes(`(${team})`));
-  return line?.trim().split(/\s+/)[1];
+  return identityLine(output, team, ["Developer ID Application"])?.trim().split(/\s+/)[1];
 }
+
+export interface AppBuild {
+  source: MacSource;
+  /** `mac` or `macAppStore`, for messages. */
+  lane: string;
+  worktree: string;
+  /** The Xcode project's folder, `dir` in the worktree. */
+  project: string;
+  /** This build's folder; logs and the archive go here. */
+  dir: string;
+  derived: string;
+  version: string;
+  build: string;
+  architectures: string[];
+  /** The bundle's name, such as `Programa.app`. */
+  bundle: string;
+  /** Where the unsigned app ends up. */
+  app: string;
+}
+
+/**
+ * Leaves the unsigned app at `app`. An Xcode build archives with the version and build stamped and signing off; a
+ * command build runs from the repository root with SHIP_VERSION and SHIP_BUILD_NUMBER set, and stamps nothing.
+ */
+export async function buildMacApp(r: Runner, input: AppBuild) {
+  const { source, worktree, dir, version, build, app } = input;
+  if (source.kind === "command") {
+    await r.run(["bash", "-c", source.build], {
+      cwd: worktree,
+      env: { SHIP_VERSION: version, SHIP_BUILD_NUMBER: build },
+      logFile: join(dir, "build.log"),
+    });
+    const built = join(worktree, source.appPath);
+    if (!r.dry && !existsSync(built))
+      throw new Error(`${input.lane}.app: the build left no ${source.appPath}; full log at ${join(dir, "build.log")}`);
+    await r.run(["ditto", built, app]);
+    return;
+  }
+  const archive = join(dir, `${source.scheme}-${version}-${build}.xcarchive`);
+  await r.run(
+    [
+      ...xcodebuildFor(source.scheme, input.derived),
+      "-destination",
+      "generic/platform=macOS",
+      "-archivePath",
+      archive,
+      "archive",
+      `MARKETING_VERSION=${version}`,
+      `CURRENT_PROJECT_VERSION=${build}`,
+      `ARCHS=${input.architectures.join(" ")}`,
+      "ONLY_ACTIVE_ARCH=NO",
+      "CODE_SIGNING_ALLOWED=NO",
+    ],
+    { cwd: input.project, logFile: join(dir, "archive.log") },
+  );
+  await r.run(["ditto", join(archive, "Products", "Applications", input.bundle), app]);
+}
+
+const xcodebuildFor = (scheme: string, derived: string) => [
+  "xcodebuild",
+  "-scheme",
+  scheme,
+  "-configuration",
+  "Release",
+  "-derivedDataPath",
+  derived,
+];
 
 const SPARKLE = "Contents/Frameworks/Sparkle.framework";
 /** Sparkle's nested code, deepest first. The XPC services keep the entitlements Sparkle ships them with. */
@@ -148,7 +224,7 @@ const SPARKLE_PARTS = [
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * The Mac direct-download lane: preflight, archive with the version and build, sign inside-out, verify, notarize and
+ * The Mac direct-download lane: preflight, build (an Xcode archive or the app's own command), sign inside-out, verify, notarize and
  * staple the app, make and notarize the DMG, write the Sparkle appcast, and upload archives first and the appcast
  * last. Tagging is the caller's, as for the other lanes.
  */
@@ -176,12 +252,19 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
 
   const project = join(worktree, mac.dir);
   const derived = join(dir, "DerivedData");
-  const archive = join(dir, `${mac.scheme}-${version}-${build}.xcarchive`);
   const app = join(dir, mac.app);
   const staging = join(dir, "updates");
   const enclosure = enclosureName(mac.dmg, build);
   const dmg = join(staging, enclosure);
-  const sparkleBin = env.SPARKLE_BIN ?? join(derived, "SourcePackages", "artifacts", "sparkle", "Sparkle", "bin");
+  // An Xcode build gets Sparkle's tools from its Swift packages; a command build has to say where they are.
+  const sparkleBin =
+    env.SPARKLE_BIN ??
+    (mac.sparkleBin
+      ? resolvePath(worktree, mac.sparkleBin)
+      : mac.kind === "command"
+        ? undefined
+        : join(derived, "SourcePackages", "artifacts", "sparkle", "Sparkle", "bin"));
+  const sparkleTool = (name: string) => join(sparkleBin ?? "<SPARKLE_BIN>", name);
   const ciKey = env.SPARKLE_PRIVATE_KEY;
 
   // 1. Preflight. The commit is main's head in a clean worktree (see runBeta), so tree and branch need no check here.
@@ -208,6 +291,10 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
     signingKey: ciKey ? publicKeyFromPrivate(ciKey) : undefined,
     publicKey: mac.publicKey,
   });
+  if (!sparkleBin)
+    problems.push(
+      "mac: a command build needs Sparkle's tools (generate_keys, generate_appcast); set SPARKLE_BIN or mac.sparkleBin",
+    );
   for (const check of host.checks()) {
     const out = await r.capture(check.argv, { env: check.env });
     const problem = out === undefined ? undefined : check.problem(out);
@@ -215,10 +302,13 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
   }
   stop(problems);
 
-  // 2. Stamp the version and build, and archive unsigned; ship signs below.
+  // 2. Build unsigned with the version and build; ship signs below.
   if (mac.kind === "xcodegen") await r.run(["xcodegen", "generate"], { cwd: project });
-  const xcodebuild = ["xcodebuild", "-scheme", mac.scheme, "-configuration", "Release", "-derivedDataPath", derived];
-  await r.run([...xcodebuild, "-resolvePackageDependencies"], { cwd: project, logFile: join(dir, "resolve.log") });
+  if (mac.kind !== "command")
+    await r.run([...xcodebuildFor(mac.scheme, derived), "-resolvePackageDependencies"], {
+      cwd: project,
+      logFile: join(dir, "resolve.log"),
+    });
   if (!ciKey) {
     // Asks whether the item exists without reading the secret, so it raises no keychain prompt. generate_keys
     // must never run without a key: without -p it creates one.
@@ -233,32 +323,34 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
       ]);
     else {
       // The keychain key is only readable once the package graph has Sparkle's tools.
-      const key = await r.capture([join(sparkleBin, "generate_keys"), "--account", mac.sparkleAccount, "-p"]);
+      const key = await r.capture([sparkleTool("generate_keys"), "--account", mac.sparkleAccount, "-p"]);
       const problem = key === undefined ? undefined : keyProblem(key.trim(), mac.publicKey);
       stop(problem ? [problem] : []);
     }
   }
-  await r.run(
-    [
-      ...xcodebuild,
-      "-destination",
-      "generic/platform=macOS",
-      "-archivePath",
-      archive,
-      "archive",
-      `MARKETING_VERSION=${version}`,
-      `CURRENT_PROJECT_VERSION=${build}`,
-      `ARCHS=${mac.architectures.join(" ")}`,
-      "ONLY_ACTIVE_ARCH=NO",
-      "CODE_SIGNING_ALLOWED=NO",
-    ],
-    { cwd: project, logFile: join(dir, "archive.log") },
-  );
-  await r.run(["ditto", join(archive, "Products", "Applications", mac.app), app]);
+  await buildMacApp(r, {
+    source: mac,
+    lane: "mac",
+    worktree,
+    project,
+    dir,
+    derived,
+    version,
+    build,
+    architectures: mac.architectures,
+    bundle: mac.app,
+    app,
+  });
   const plist = join(app, "Contents", "Info.plist");
+  // A command build stamps nothing, so ship sets the version and build the checks below expect.
+  const stamp =
+    mac.kind === "command"
+      ? ["-c", `Set :CFBundleShortVersionString ${version}`, "-c", `Set :CFBundleVersion ${build}`]
+      : [];
   // Installed copies only follow this feed and trust this key, so the app carries ship.json's, whatever it was built with.
   await r.run([
     "/usr/libexec/PlistBuddy",
+    ...stamp,
     "-c",
     `Set :SUFeedURL ${mac.feedUrl}`,
     "-c",
@@ -395,7 +487,7 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
   }
   try {
     await r.run([
-      join(sparkleBin, "generate_appcast"),
+      sparkleTool("generate_appcast"),
       ...(ciKey ? ["--ed-key-file", keyFile] : ["--account", mac.sparkleAccount]),
       "--download-url-prefix",
       host.downloadPrefix,

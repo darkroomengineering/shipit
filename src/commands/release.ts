@@ -1,4 +1,4 @@
-import { releaseIos } from "../appstore.ts";
+import { releaseStore } from "../appstore.ts";
 import { Asc } from "../asc.ts";
 import { publishRelease } from "../build-windows.ts";
 import { lanesFor, loadCredentials, type ShipConfig, type Target } from "../config.ts";
@@ -18,7 +18,7 @@ export interface ReleaseOptions {
 
 /**
  * Ships main to the stores in one step: runs the beta (build, upload, TestFlight / Play internal), then sends
- * the newest beta to review: iOS to App Review, Android to Play production. The Mac beta is already on its
+ * the newest beta to review: iOS and the Mac App Store to App Review, Android to Play production. The Mac beta is already on its
  * Sparkle feed, so it needs no second step. Platforms whose build of main's
  * head commit is already uploaded skip the build, so re-runs and quiet nights don't upload duplicates. Each
  * platform's review step runs even when the other fails; the command fails if any did.
@@ -48,8 +48,14 @@ export async function release(config: ShipConfig, options: ReleaseOptions) {
       try {
         // A Mac app has one Sparkle feed and no channels yet, so the published beta is the release.
         if (platform === "mac") log("mac: the beta is on the app's only Sparkle feed, so there is nothing to promote");
-        else if (platform === "ios")
-          await releaseIos(config, new Asc(loadCredentials(config), options.dry), options.dry, options.unattended);
+        else if (platform === "ios" || platform === "macAppStore")
+          await releaseStore(
+            config,
+            new Asc(loadCredentials(config), options.dry),
+            platform,
+            options.dry,
+            options.unattended,
+          );
         else if (platform === "android") await releaseAndroid(config, options.dry);
         // Also when the build was skipped: a beta that tagged windows can still have failed before publishing.
         else if (config.windows) await publishRelease(config.windows.release, options.dry);
