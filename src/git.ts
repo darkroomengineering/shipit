@@ -143,10 +143,14 @@ async function commitVersion(config: ShipConfig, dir: string, next: string) {
 /**
  * Opens a pull request that moves main to a new version, so an unattended run never pushes to main. Runs that
  * find the branch already pushed only make sure its pull request is open. A repository with no remote commits
- * the version to its local main, as `pushVersion` does.
+ * the version to its local main, as `pushVersion` does. Returns whether this run started the version, which a
+ * run that finds the branch already pushed did not.
  */
-export async function proposeVersion(config: ShipConfig, next: string) {
-  if (!(await hasRemote(config.root))) return pushVersion(config, next);
+export async function proposeVersion(config: ShipConfig, next: string): Promise<boolean> {
+  if (!(await hasRemote(config.root))) {
+    await pushVersion(config, next);
+    return true;
+  }
   const branch = `ship/version-${next}`;
   const title = `chore: start version ${next}`;
   const gh = (dir: string, ...args: string[]) =>
@@ -154,7 +158,7 @@ export async function proposeVersion(config: ShipConfig, next: string) {
   const open = (dir: string) =>
     gh(dir, "pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url // empty");
   const create = async (dir: string) => {
-    const body = `App Review approved the version on main, so ship started ${next}. Builds already carry ${next}; \`ship release\` sends them to App Review once this is merged.`;
+    const body = `App Review approved the version on main, so ship started ${next}. Builds already carry ${next}; \`ship release\` sends iOS builds to App Review once this is merged.`;
     const url = await gh(dir, "pr", "create", "--base", "main", "--head", branch, "--title", title, "--body", body);
     log(`opened ${url} to start version ${next}`);
   };
@@ -163,13 +167,14 @@ export async function proposeVersion(config: ShipConfig, next: string) {
     const url = await open(config.root);
     if (url) log(`version ${next} waits for ${url} to be merged`);
     else await create(config.root);
-    return;
+    return false;
   }
   await withWorktree(config, await mainRef(config.root), async (dir) => {
     await commitVersion(config, dir, next);
     await git(dir, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
     await create(dir);
   });
+  return true;
 }
 
 /** Commits a new version to main from a throwaway worktree, so the working copy is untouched. */

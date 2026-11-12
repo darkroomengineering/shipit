@@ -25,7 +25,7 @@ Run `ship` from the app's folder (where `ship.json` lives, which is also the git
 **Beta.** `ship beta` always builds from a clean worktree of `origin/main`, so uncommitted work never ships. A repository with no `origin` remote builds its local `main` and pushes nothing (tags and version bumps stay local). It:
 
 1. Fetches `main` and reads the version.
-2. Asks App Store Connect whether that version is still open. Once App Review approves a version it takes no more builds, so ship opens a pull request, `chore: start version X`, that bumps the patch number on `main`. The build already carries the new version, and a new version builds every platform. Until the pull request is merged, `ship release` keeps waiting and later betas reuse the same pull request. This needs the `gh` CLI, signed in.
+2. Asks App Store Connect whether that version is still open. Once App Review approves a version it takes no more builds, so ship opens a pull request, `chore: start version X`, that bumps the patch number on `main`. The build already carries the new version, and a new version builds every platform. Until the pull request is merged, `ship release` keeps waiting on iOS (Android promotes the newest internal build as before), and later betas reuse the same pull request and build only the platforms asked for. This needs the `gh` CLI, signed in.
 3. Takes one UTC instant for the whole run and derives both build numbers from it (see below).
 4. Runs your `checks` in the worktree, then builds.
 5. Uploads, tags the commit `v<version>-<build>`, pushes the tag.

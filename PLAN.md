@@ -58,6 +58,6 @@ Builds always come from a clean worktree of `origin/main`. Uncommitted work neve
 ## Risks
 
 - Expo archive is the fragile part (Apple tar, `._*`, Hermes dSYM, Xcode 27 patches). Port minecompanion's script verbatim; prove it with a dry run before deleting anything.
-- The auto version bump never pushes to main: it opens a pull request after an approval, and `ship release` waits until someone merges it.
+- The auto version bump never pushes to main: it opens a pull request after an approval, and iOS `ship release` waits until someone merges it.
 - Two launchd agents (nocam nightly, antocam keep-alive) are replaced by one; install it only after nocam's branch is merged, or nocam's night run breaks.
 - Real uploads are run by the user (`! ship beta`); agent runs stop at dry runs.

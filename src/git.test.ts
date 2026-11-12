@@ -62,27 +62,27 @@ describe("proposeVersion", () => {
     const config = await repo("remote-app", true);
     const ghCalls = () => readFileSync(ghLog, "utf8").trim().split("\n");
 
-    await proposeVersion(config, "1.0.1");
+    expect(await proposeVersion(config, "1.0.1")).toBe(true);
     expect(await git(config.root, "show", "origin/main:VERSION")).toBe("1.0.0");
     await git(config.root, "fetch", "-q", "origin", "ship/version-1.0.1");
     expect(await git(config.root, "show", "FETCH_HEAD:VERSION")).toBe("1.0.1");
     expect(await git(config.root, "log", "-1", "--format=%s", "FETCH_HEAD")).toBe("chore: start version 1.0.1");
     expect(ghCalls().filter((call) => call.startsWith("pr create"))).toHaveLength(1);
 
-    // A later beta, with the pull request still open, opens nothing new.
-    await proposeVersion(config, "1.0.1");
+    // A later beta, with the pull request still open, opens nothing new and did not start the version.
+    expect(await proposeVersion(config, "1.0.1")).toBe(false);
     expect(ghCalls().filter((call) => call.startsWith("pr create"))).toHaveLength(1);
 
     // The pull request was closed, or creating it failed after the push: the existing branch gets a new one.
     rmSync(ghOpen);
-    await proposeVersion(config, "1.0.1");
+    expect(await proposeVersion(config, "1.0.1")).toBe(false);
     expect(ghCalls().filter((call) => call.startsWith("pr create"))).toHaveLength(2);
     expect(await git(config.root, "show", "origin/main:VERSION")).toBe("1.0.0");
   });
 
   test("a repository with no remote commits to its local main", async () => {
     const config = await repo("local-app", false);
-    await proposeVersion(config, "1.0.1");
+    expect(await proposeVersion(config, "1.0.1")).toBe(true);
     expect(await git(config.root, "show", "main:VERSION")).toBe("1.0.1");
     expect(readFileSync(join(config.root, "VERSION"), "utf8")).toBe("1.0.1\n");
   });

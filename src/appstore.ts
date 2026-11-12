@@ -52,9 +52,12 @@ export async function openVersion(
 
   const next = bump(version, "patch");
   log(`${version} is ${state}, starting ${next}`);
-  if (dry) log(`dry run: skipped opening a pull request for "chore: start version ${next}"`);
-  else await proposeVersion(config, next);
-  return { version: next, bumped: true };
+  if (dry) {
+    log(`dry run: skipped opening a pull request for "chore: start version ${next}"`);
+    return { version: next, bumped: true };
+  }
+  // Until the pull request is merged every run lands here; only the run that started the version builds every platform.
+  return { version: next, bumped: await proposeVersion(config, next) };
 }
 
 /**
