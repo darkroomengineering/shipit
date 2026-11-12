@@ -25,6 +25,8 @@ export interface IosConfig {
   preArchive: string | null;
   keepAlive: string | null;
   listing: string | null;
+  /** How `listing` is laid out: nocam's JSON file, or a fastlane metadata folder. */
+  listingFormat: "json" | "fastlane";
 }
 
 export interface AndroidConfig {
@@ -299,6 +301,9 @@ function parseIos(raw: Raw, errors: string[]): IosConfig {
   const keepAlive = reader.optionalString("keepAlive");
   if (keepAlive && !/^\d+d$/.test(keepAlive))
     reader.errors.push('ios.keepAlive: expected a number of days such as "75d"');
+  const listingFormat = reader.optionalString("listingFormat") ?? "json";
+  if (listingFormat !== "json" && listingFormat !== "fastlane")
+    reader.errors.push('ios.listingFormat: expected "json" or "fastlane"');
   const config: IosConfig = {
     kind: kind === "expo" ? "expo" : "xcodegen",
     dir,
@@ -310,6 +315,7 @@ function parseIos(raw: Raw, errors: string[]): IosConfig {
     preArchive: reader.optionalString("preArchive"),
     keepAlive,
     listing: reader.optionalString("listing"),
+    listingFormat: listingFormat === "fastlane" ? "fastlane" : "json",
   };
   reader.rejectUnknown([
     "kind",
@@ -322,6 +328,7 @@ function parseIos(raw: Raw, errors: string[]): IosConfig {
     "preArchive",
     "keepAlive",
     "listing",
+    "listingFormat",
   ]);
   errors.push(...reader.errors);
   return config;

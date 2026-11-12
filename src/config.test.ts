@@ -50,9 +50,18 @@ describe("parseConfig defaults", () => {
     expect(config.credentials).toBeNull();
     expect(config.ios?.dir).toBe("ios");
     expect(config.ios?.keepAlive).toBeNull();
+    expect(config.ios?.listingFormat).toBe("json");
     expect(config.android?.dir).toBe("android");
     expect(config.android?.playKey).toBeNull();
   });
+});
+
+test("a fastlane metadata folder as the listing", () => {
+  const config = parse({
+    ...minimal,
+    ios: { ...minimal.ios, listing: "ios/fastlane/metadata", listingFormat: "fastlane" },
+  });
+  expect(config.ios?.listingFormat).toBe("fastlane");
 });
 
 describe("parseConfig rejects", () => {
@@ -81,6 +90,7 @@ describe("parseConfig rejects", () => {
     rejects({ ...minimal, ios: { ...minimal.ios, kind: "flutter" } }, 'ios.kind: expected "expo" or "xcodegen"');
     rejects({ ...minimal, ios: { ...minimal.ios, keepAlive: "75" } }, "ios.keepAlive: expected a number of days");
     rejects({ ...minimal, ios: { ...minimal.ios, kind: "expo", dir: "native" } }, "native folder is named ios");
+    rejects({ ...minimal, ios: { ...minimal.ios, listingFormat: "yaml" } }, 'ios.listingFormat: expected "json"');
   });
 
   test("text that is not a JSON object", () => {

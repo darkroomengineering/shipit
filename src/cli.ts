@@ -9,6 +9,7 @@ const USAGE = `ship: one release tool for every native app
 
   ship beta [ios|android] [--dry-run [--ref R]] [--skip-checks] build main, upload to TestFlight / Play internal
   ship release [ios|android] [--dry-run] [--skip-checks] run ship beta, then send it to App Review / Play production
+  ship listing [ios|android] [--dry-run]                 push the store listing on main; never submits for review
   ship version [patch|minor|major] [--dry-run]           print the version, or bump it on main
   ship ci [ios|android]                                  clean origin/main only: run gates, then build every lane (dry run for now)
   ship nightly [--dry-run]                               release every nightly app and keep betas alive
@@ -62,6 +63,10 @@ async function main() {
     case "release": {
       const { release } = await import("./commands/release.ts");
       return release(loadConfig(root), { platform: platformArg(), dry, skipChecks: values["skip-checks"] });
+    }
+    case "listing": {
+      const { listing } = await import("./commands/listing.ts");
+      return listing(loadConfig(root), { platform: platformArg(), dry });
     }
     case "version": {
       const { versionCommand } = await import("./commands/version.ts");
