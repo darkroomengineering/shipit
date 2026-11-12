@@ -137,7 +137,7 @@ Google Play uses the service account JSON from `android.playKey`. It needs "Rele
 
 ## Nightly
 
-`ship nightly` scans `~/Developer/*/ship.json` (set `SHIPIT_PROJECTS` to scan elsewhere). For each project it runs `ship release` when `nightly` is `true`, and a keep-alive beta when `ios.keepAlive` is due. Projects run one after another and one failure never stops the others; the exit code is non-zero if any failed, and a macOS notification names them. With `--dry-run` it reports what would run and builds nothing.
+`ship nightly` scans `~/Developer/*/ship.json` and `~/Developer/*/*/ship.json`, so apps grouped in a folder such as `~/Developer/@darkroom` are found too. It skips `node_modules`, `.worktrees` and dot folders, and does not look inside a project for more projects. Set `SHIPIT_PROJECTS` to scan another folder. For each project it runs `ship release` when `nightly` is `true`, and a keep-alive beta when `ios.keepAlive` is due. Projects run one after another and one failure never stops the others; the exit code is non-zero if any failed, and a macOS notification names them. With `--dry-run` it reports what would run and builds nothing.
 
 ```sh
 ship install-launchd --dry-run   # print the agent
