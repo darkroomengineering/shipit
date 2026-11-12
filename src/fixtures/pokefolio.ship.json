@@ -1,0 +1,22 @@
+{
+  "name": "Pokefolio",
+  "nightly": false,
+  "version": { "file": "apps/mobile/app.json", "json": "expo.version" },
+  "checks": [
+    "bun run lint",
+    "bun run typecheck",
+    "bun run test",
+    "deno test --no-lock supabase/functions/price-lookup/match_test.ts"
+  ],
+  "notesPaths": ["apps/mobile", "packages"],
+  "credentials": "~/.config/pokefolio/asc.env",
+  "ios": {
+    "kind": "expo",
+    "dir": "apps/mobile/ios",
+    "scheme": "Pokefolio",
+    "bundleId": "com.arzafran.pokefolio",
+    "externalGroups": ["Public Beta"],
+    "preArchive": "scripts/ship-pre-archive.sh",
+    "copy": ["apps/mobile/.env.local"]
+  }
+}

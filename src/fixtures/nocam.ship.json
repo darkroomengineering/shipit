@@ -1,0 +1,25 @@
+{
+  "name": "NoCam",
+  "nightly": false,
+  "version": { "file": "VERSION" },
+  "checks": [],
+  "notesPaths": ["ios/NoCam", "android/app"],
+  "notesFile": "RELEASE_NOTES.md",
+  "credentials": "~/.appstoreconnect/nocam.env",
+  "ios": {
+    "kind": "xcodegen",
+    "dir": "ios",
+    "scheme": "NoCam",
+    "bundleId": "com.frz.NoCam",
+    "externalGroups": ["Public"],
+    "listing": "shared/store/listing.json"
+  },
+  "android": {
+    "dir": "android",
+    "package": "com.frz.nocam",
+    "versionCodeProperty": "nocam.versionCode",
+    "playKey": "~/.config/nocam/play-service-account.json",
+    "copy": ["android/local.properties"],
+    "checks": ["android/scripts/check-permissions.sh"]
+  }
+}
