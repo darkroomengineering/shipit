@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandRunner, developerIdentity, type Runner, shellLine, shipMac } from "./build-mac.ts";
 import { parseConfig, type ShipConfig } from "./config.ts";
@@ -400,6 +400,95 @@ edSignature: c2ln
       }),
     ).rejects.toThrow("the app is missing the entitlement com.apple.security.cs.allow-jit");
     expect(runner.calls.some((call) => call.includes("notarytool"))).toBe(false);
+  });
+});
+
+describe("a command build", () => {
+  /** Programa built by a script instead of Xcode, the shape codigo's cargo build uses. */
+  function scripted(sparkleBin?: string) {
+    const { worktree, config } = programa();
+    const raw = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "programa.ship.json"), "utf8"));
+    const { scheme: _, ...mac } = raw.mac;
+    const parsed = parseConfig(
+      JSON.stringify({
+        ...raw,
+        mac: { ...mac, kind: "command", build: "scripts/bundle.sh", app: "out/Programa.app", sparkleBin },
+      }),
+      "/apps/x",
+    );
+    return { worktree, config: { ...parsed, credentials: config.credentials } satisfies ShipConfig };
+  }
+  const plan = async (config: ShipConfig, worktree: string, env: NodeJS.ProcessEnv = {}) => {
+    const lines: string[] = [];
+    const original = console.warn;
+    const warnings: string[] = [];
+    console.warn = (line: string) => warnings.push(line);
+    try {
+      await shipMac({
+        config,
+        worktree,
+        version: VERSION,
+        build: BUILD,
+        dry: true,
+        skipUpload: false,
+        runner: commandRunner(true, (line) => lines.push(line)),
+        dir: "/build",
+        history: "/history",
+        env,
+        fetchText: async () => appcast("42875290831001002"),
+      });
+    } finally {
+      console.warn = original;
+    }
+    return { lines: lines.map((line) => line.replace(/^dry run: would (run )?/, "")), warnings };
+  };
+
+  test("runs the command from the repository root, then stamps the version and build itself", async () => {
+    const { worktree, config } = scripted("~/Sparkle/bin");
+    const { lines } = await plan(config, worktree);
+    const app = "/build/Programa.app";
+    const bin = join(homedir(), "Sparkle", "bin");
+    expect(lines.slice(2, 8)).toEqual([
+      "security find-generic-password -s https://sparkle-project.org -a ed25519",
+      `${bin}/generate_keys --account ed25519 -p`,
+      `(cd ${worktree} && SHIP_VERSION=${VERSION} SHIP_BUILD_NUMBER=${BUILD} bash -c scripts/bundle.sh > /build/build.log 2>&1)`,
+      `ditto ${worktree}/out/Programa.app ${app}`,
+      `/usr/libexec/PlistBuddy -c 'Set :CFBundleShortVersionString ${VERSION}' -c 'Set :CFBundleVersion ${BUILD}' -c 'Set :SUFeedURL https://github.com/darkroomengineering/programa/releases/latest/download/appcast.xml' -c 'Set :SUPublicEDKey ${PUBLIC_KEY}' ${app}/Contents/Info.plist`,
+      `plutil -convert json -o - ${app}/Contents/Info.plist`,
+    ]);
+    expect(lines.some((line) => line.includes("xcodebuild"))).toBe(false);
+    expect(lines.some((line) => line.startsWith(`${bin}/generate_appcast`))).toBe(true);
+  });
+
+  test("SPARKLE_BIN wins over mac.sparkleBin", async () => {
+    const { worktree, config } = scripted("~/Sparkle/bin");
+    const { lines } = await plan(config, worktree, { SPARKLE_BIN: "/opt/sparkle/bin" });
+    expect(lines).toContain("/opt/sparkle/bin/generate_keys --account ed25519 -p");
+  });
+
+  test("without SPARKLE_BIN or mac.sparkleBin a real run refuses before building", async () => {
+    const { worktree, config } = scripted();
+    const runner = recorder();
+    await expect(
+      shipMac({
+        config,
+        worktree,
+        version: VERSION,
+        build: BUILD,
+        dry: false,
+        skipUpload: false,
+        runner,
+        dir: join(worktree, "build"),
+        history: join(worktree, "history"),
+        env: {},
+        fetchText: async () => appcast("42875290831001002"),
+      }),
+    ).rejects.toThrow(
+      "mac: a command build needs Sparkle's tools (generate_keys, generate_appcast); set SPARKLE_BIN or mac.sparkleBin",
+    );
+    expect(runner.calls.some((call) => call.startsWith("bash"))).toBe(false);
+    const { warnings } = await plan(config, worktree);
+    expect(warnings.join("\n")).toContain("a command build needs Sparkle's tools");
   });
 });
 

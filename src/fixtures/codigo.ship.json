@@ -1,0 +1,22 @@
+{
+  "name": "codigo",
+  "version": { "file": "Cargo.toml", "regex": "^version = \"([0-9.]+)\"" },
+  "credentials": "~/.appstoreconnect/codigo.env",
+  "macAppStore": {
+    "kind": "command",
+    "build": "scripts/bundle.sh",
+    "app": "target/release/codigo.app",
+    "bundleId": "dev.darkroom.codigo",
+    "entitlements": "assets/appstore/codigo.entitlements",
+    "privacyManifest": "assets/appstore/PrivacyInfo.xcprivacy",
+    "provisioningProfile": "~/.appstoreconnect/codigo/codigo_Mac_App_Store.provisionprofile",
+    "infoPlist": {
+      "CFBundleDisplayName": "codigo",
+      "CFBundleInfoDictionaryVersion": "6.0",
+      "CFBundleSupportedPlatforms": ["MacOSX"],
+      "LSMinimumSystemVersion": "13.0",
+      "ITSAppUsesNonExemptEncryption": false,
+      "NSHumanReadableCopyright": "Copyright 2026 Darkroom Engineering LLC"
+    }
+  }
+}

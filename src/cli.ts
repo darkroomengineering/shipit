@@ -7,14 +7,14 @@ import { errorMessage } from "./log.ts";
 
 const USAGE = `ship: one release tool for every native app
 
-  ship beta [ios|android|mac|windows] [--dry-run [--ref R]] [--skip-checks] [--skip-upload]
+  ship beta [ios|android|mac|macAppStore|windows] [--dry-run [--ref R]] [--skip-checks] [--skip-upload]
                                                          build main, upload to TestFlight / Play internal / the Sparkle feed / GitHub
-  ship release [ios|android|mac|windows] [--dry-run] [--skip-checks] [--skip-upload]
+  ship release [ios|android|mac|macAppStore|windows] [--dry-run] [--skip-checks] [--skip-upload]
                                                          run ship beta, then send it to App Review / Play production
   ship listing [ios|android] [--dry-run]                 push the store listing on main; never submits for review
   ship version [patch|minor|major] [--dry-run]           print the version, or bump it on main
   ship update "what changed" [--dry-run]                 publish main as an over-the-air EAS update (expo, JS only)
-  ship ci [ios|android|mac|windows]                      clean origin/main only: run gates, then build every lane (dry run for now)
+  ship ci [ios|android|mac|macAppStore|windows]          clean origin/main only: run gates, then build every lane (dry run for now)
   ship nightly [--dry-run]                               release every nightly app and keep betas alive
   ship status                                            latest builds and store states
   ship doctor                                            check tools, credentials and the app record

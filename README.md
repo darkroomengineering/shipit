@@ -2,7 +2,7 @@
 
 One release tool for every native app. Run `ship beta` in an app's folder and the latest `main` on GitHub is built, uploaded to TestFlight (and Google Play internal testing for Android), tagged, and sent to your external testers. Run `ship release` and the newest beta goes to App Review (or Play production). A nightly job can do the second step for you.
 
-Mac apps that update through Sparkle get the same two commands: `ship beta mac` signs, notarizes and publishes a DMG and its appcast (see [Mac direct download](#mac-direct-download)).
+Mac apps that update through Sparkle get the same two commands: `ship beta mac` signs, notarizes and publishes a DMG and its appcast (see [Mac direct download](#mac-direct-download)). Mac App Store apps do too: `ship beta macAppStore` uploads a signed installer package to TestFlight and `ship release macAppStore` sends it to App Review (see [Mac App Store](#mac-app-store)). Both Mac lanes build with Xcode or with the app's own build command, so a Rust or other non-Xcode app ships the same way.
 
 Nothing else is needed: no fastlane, no Ruby, no npm packages at runtime. It is Bun, `git`, `xcodebuild` and the App Store Connect and Google Play APIs.
 
@@ -19,15 +19,15 @@ Run `ship` from the app's folder (where `ship.json` lives, which is also the git
 
 ## Two lanes
 
-| Lane | iOS | Android | Mac | Command |
-| --- | --- | --- | --- | --- |
-| Beta | TestFlight, external groups, Beta App Review | Play internal track | Notarized DMG on the app's Sparkle feed | `ship beta` |
-| Release | Beta, then App Review (App Store) | Beta, then Play production | The beta (one feed, nothing to promote) | `ship release` |
+| Lane | iOS | Android | Mac | Mac App Store | Command |
+| --- | --- | --- | --- | --- | --- |
+| Beta | TestFlight, external groups, Beta App Review | Play internal track | Notarized DMG on the app's Sparkle feed | TestFlight | `ship beta` |
+| Release | Beta, then App Review (App Store) | Beta, then Play production | The beta (one feed, nothing to promote) | Beta, then App Review (Mac App Store) | `ship release` |
 
 **Beta.** `ship beta` always builds from a clean worktree of `origin/main`, so uncommitted work never ships. A repository with no `origin` remote builds its local `main` and pushes nothing (tags and version bumps stay local). It:
 
 1. Fetches `main` and reads the version.
-2. Asks App Store Connect whether that version is still open. Once App Review approves a version it takes no more builds, so ship opens a pull request, `chore: start version X`, that bumps the patch number on `main`. The build already carries the new version, and a new version builds every platform. Until the pull request is merged, `ship release` keeps waiting on iOS (Android promotes the newest internal build as before), and later betas reuse the same pull request and build only the platforms asked for. This needs the `gh` CLI, signed in.
+2. Asks App Store Connect whether that version is still open, for iOS and for the Mac App Store. Once App Review approves a version it takes no more builds, so ship opens a pull request, `chore: start version X`, that bumps the patch number on `main`. The build already carries the new version, and a new version builds every platform. Until the pull request is merged, `ship release` keeps waiting on iOS (Android promotes the newest internal build as before), and later betas reuse the same pull request and build only the platforms asked for. This needs the `gh` CLI, signed in.
 3. Takes one UTC instant for the whole run and derives both build numbers from it (see below).
 4. Runs your `checks` in the worktree, then builds.
 5. Uploads, tags the commit `v<version>-<build>`, pushes the tag.
@@ -103,12 +103,12 @@ At the repo root. Unknown keys are rejected so typos show up.
 | `secrets` | `{ "name", "path" or "env", "onePassword", "restoreHint" }` for each secret the release needs: where it lives, the 1Password item that holds it, and how to get it back. Validated only. |
 | `gates` | Shell commands `ship ci` runs in the checkout before any lane. |
 | `mac` | Mac app for direct download with Sparkle. See [Mac direct download](#mac-direct-download). |
-| `macAppStore` | Mac App Store app: `scheme`, `bundleId`, and optional `dir`, `copy`, `checks`. No lane yet. |
+| `macAppStore` | Mac App Store app. See [Mac App Store](#mac-app-store). |
 | `windows` | A Velopack app: see [Windows](#windows). |
 | `linux`, `tauri` | Optional `dir`, `copy`, `checks`. No lane yet. |
 | `npm` | `package`, and optional `dir`, `copy`, `checks`. No lane yet. |
 
-A config needs at least one target. Asking for a target with no lane (`ship beta linux`) fails with "lane not implemented yet (INC-998/999/1000)", and so does a command run for every target when the config has one of them, so half an app is never released by accident; pass `ios`, `android`, `mac` or `windows` to run only those.
+A config needs at least one target. Asking for a target with no lane (`ship beta linux`) fails with "lane not implemented yet (INC-998/999/1000)", and so does a command run for every target when the config has one of them, so half an app is never released by accident; pass `ios`, `android`, `mac`, `macAppStore` or `windows` to run only those.
 
 ### Release notes
 
@@ -167,13 +167,13 @@ Every guard runs and prints its result, so one run lists every problem. Then it 
 
 `ship beta mac` builds main in a clean worktree, as the phone lanes do, and publishes a Developer ID signed, notarized DMG to the app's Sparkle feed. `ship release mac` runs the same beta: a Mac app has one feed and no channels yet, so the published beta is the release and there is nothing to promote. Steps, in order:
 
-1. **Preflight.** `CHANGELOG.md` (or `changelog`) has a section for the version, headed `## 1.2.3` or `## [1.2.3] - date`. The build number is higher than every build in the published appcast, read from `feedUrl` (builds compare as whole numbers of any length). The Sparkle private key matches `publicKey`: in CI the key in `SPARKLE_PRIVATE_KEY` is checked before anything runs, on a Mac the keychain key (`generate_keys --account <sparkleAccount> -p`) right after Swift packages resolve, before the archive. The hosting is ready (below). Any failure stops the run.
-2. **Stamp and archive.** `xcodegen generate` first when `kind` is `xcodegen`, then `xcodebuild archive` with `MARKETING_VERSION`, `CURRENT_PROJECT_VERSION` and `ARCHS` set and signing off. ship writes `feedUrl` and `publicKey` into the app's `SUFeedURL` and `SUPublicEDKey` (the keys must already be in its Info.plist) and checks the bundle id, version and build.
+1. **Preflight.** `CHANGELOG.md` (or `changelog`) has a section for the version, headed `## 1.2.3` or `## [1.2.3] - date`. The build number is higher than every build in the published appcast, read from `feedUrl` (builds compare as whole numbers of any length). The Sparkle private key matches `publicKey`: in CI the key in `SPARKLE_PRIVATE_KEY` is checked before anything runs, on a Mac the keychain key (`generate_keys --account <sparkleAccount> -p`) right after Swift packages resolve, before the build. A `command` build names where Sparkle's tools are (below). The hosting is ready (below). Any failure stops the run.
+2. **Stamp and build.** For an Xcode build, `xcodegen generate` first when `kind` is `xcodegen`, then `xcodebuild archive` with `MARKETING_VERSION`, `CURRENT_PROJECT_VERSION` and `ARCHS` set and signing off. For a `command` build, `build` runs with `bash -c` from the repository root, with `SHIP_VERSION` and `SHIP_BUILD_NUMBER` set, and must leave the app at `app`; ship copies it and sets `CFBundleShortVersionString` and `CFBundleVersion` itself. The app must embed Sparkle either way. ship writes `feedUrl` and `publicKey` into the app's `SUFeedURL` and `SUPublicEDKey` (the keys must already be in its Info.plist) and checks the bundle id, version and build.
 3. **Sign** inside-out with the hardened runtime and a timestamp: Sparkle's XPC services (keeping their entitlements), `Autoupdate`, `Updater.app` and the framework, then each `sign` entry (with its `helperEntitlements`), then the app with `entitlements`. Never `--deep`, which would copy the app's entitlements onto every helper. Then `codesign --verify --deep --strict`.
 4. **Verify.** The app carries every `requiredEntitlements` key and no `forbiddenEntitlements` key; `sign` entries without their own entitlements carry neither; Sparkle's parts and `sign` entries with `helperEntitlements` keep their own but no forbidden key; the main executable and each `binaries` entry hold exactly `architectures` (`lipo -archs`).
 5. **Notarize** the app with `notarytool` and staple it, so a copy dragged out of the DMG works offline, and check it with `spctl -a -vv`.
 6. **DMG** with `hdiutil`: the app and an Applications link, signed, notarized, stapled and checked with `spctl`.
-7. **Appcast.** Sparkle's `generate_appcast` (from the app's SwiftPM artifacts, or `SPARKLE_BIN`) extends the published appcast, makes deltas from the newest `deltas` releases, embeds the CHANGELOG section as the update notes, and signs the archive and, when the app sets `SURequireSignedFeed`, the feed. Each build's DMG is `<dmg base>-<build>.dmg`, a URL that never changes, because Sparkle rejects an archive whose bytes changed under a signed URL (error 4005). The appcast is checked, never edited, and kept as `appcast-<build>.xml` in `~/Library/Caches/shipit/<app>-<hash>/appcasts/` and on the host, for rollback.
+7. **Appcast.** Sparkle's `generate_appcast` (from `SPARKLE_BIN`, then `sparkleBin`, then the app's SwiftPM artifacts) extends the published appcast, makes deltas from the newest `deltas` releases, embeds the CHANGELOG section as the update notes, and signs the archive and, when the app sets `SURequireSignedFeed`, the feed. Each build's DMG is `<dmg base>-<build>.dmg`, a URL that never changes, because Sparkle rejects an archive whose bytes changed under a signed URL (error 4005). The appcast is checked, never edited, and kept as `appcast-<build>.xml` in `~/Library/Caches/shipit/<app>-<hash>/appcasts/` and on the host, for rollback.
 8. **Upload** archives first, then `appcast-<build>.xml`, then `appcast.xml`, then the stable `dmg` name, so the feed never names a file that is not there. On GitHub an archive that already exists stops the upload, since `gh` uploads it without `--clobber`; on R2 `aws s3 cp` would overwrite it, so there only the per-build names keep archives apart.
 9. **Tag** `v<version>-<build>`, as every lane does.
 
@@ -236,11 +236,14 @@ browsee's feed stays on R2:
 
 | Key | Meaning |
 | --- | --- |
-| `mac.scheme`, `mac.bundleId` | Xcode scheme, and the bundle id the built app must have. |
-| `mac.kind` | `xcodeproj` (default) builds the project in `dir`; `xcodegen` runs `xcodegen generate` first. |
+| `mac.kind` | `xcodeproj` (default) builds the project in `dir`; `xcodegen` runs `xcodegen generate` first; `command` runs `build` instead of Xcode. |
+| `mac.scheme` | Xcode scheme. Required for `xcodeproj` and `xcodegen`, refused for `command`. |
+| `mac.build` | `command` only: the shell command that builds the app, run from the repository root with `SHIP_VERSION` and `SHIP_BUILD_NUMBER` set, such as `scripts/bundle.sh`. |
+| `mac.bundleId` | The bundle id the built app must have. |
 | `mac.dir`, `mac.copy`, `mac.checks` | As for iOS. `checks` run in the worktree before the build, so they can also fetch what the build needs. |
-| `mac.app` | The built bundle's name. Default `<name>.app`. |
-| `mac.architectures` | `arm64` and/or `x86_64`. Default `["arm64"]`. Passed to the build as `ARCHS` and verified. |
+| `mac.app` | Xcode builds: the built bundle's name, default `<name>.app`. `command`: required, the repo-relative path the command leaves the app at, such as `target/release/codigo.app`; its last segment is the bundle name. |
+| `mac.architectures` | `arm64` and/or `x86_64`. Default `["arm64"]`. Passed to an Xcode build as `ARCHS`, and verified for every build. |
+| `mac.sparkleBin` | Folder with Sparkle's `generate_keys` and `generate_appcast`, for an app that does not get them from SwiftPM. `~` expands; a relative path is in the repository. `SPARKLE_BIN` wins over it. A `command` build needs one of the two. |
 | `mac.feedUrl` | The app's `SUFeedURL`. Required. ship never changes it; it must be a URL the hosting serves. |
 | `mac.publicKey` | The app's `SUPublicEDKey`, the key installed copies trust. Required. ship never changes or regenerates it. |
 | `mac.sparkleAccount` | Keychain account of the Sparkle private key on a Mac. Default `ed25519`, Sparkle's own default. |
@@ -262,6 +265,50 @@ Signing and Sparkle need, besides the App Store Connect key:
 | Notarization | `xcrun notarytool store-credentials <notaryProfile>` once | The App Store Connect key (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `KEY_PATH`) |
 | Sparkle private key | Login keychain, account `sparkleAccount` | `SPARKLE_PRIVATE_KEY`, written to a mode-600 file for generate_appcast and deleted after |
 | Hosting | `gh auth login`, or the aws profile | `GH_TOKEN` with contents write, or the aws keys |
+
+## Mac App Store
+
+`ship beta macAppStore` builds main in a clean worktree, packages it for the Mac App Store and uploads it to App Store Connect, where it lands in TestFlight. `ship release macAppStore` runs that beta, then sends the newest processed build of the version to App Review exactly as iOS does (same notes, same withdraw-and-replace of a submission still in review), on the app's macOS platform and without a store listing. The lane is a port of codigo's `scripts/appstore.sh`. Steps, in order:
+
+1. **Preflight.** The provisioning profile exists, the App Store Connect key loads, and the keychain has the team's store identities: `Apple Distribution` (or `3rd Party Mac Developer Application`) for the app and `3rd Party Mac Developer Installer` (or `Mac Installer Distribution`) for the package. `APP_STORE_IDENTITY` and `APP_STORE_INSTALLER_IDENTITY` override the lookup.
+2. **Build** unsigned, as the mac lane does: an Xcode archive, or `build` from the repository root with `SHIP_VERSION` and `SHIP_BUILD_NUMBER` set.
+3. **Fill in the app.** The profile becomes `Contents/embedded.provisionprofile`, `privacyManifest` becomes `Contents/Resources/PrivacyInfo.xcprivacy`, and `plutil -replace` writes each `infoPlist` entry, then `CFBundleShortVersionString` and `CFBundleVersion`. The bundle id must be `bundleId`.
+4. **Sign** the app with the hardened runtime, a timestamp and `entitlements`, remove quarantine attributes (App Store Connect refuses them), verify the signature, and check the main executable holds exactly `architectures`. Only the app itself is signed: an app with embedded frameworks or helpers needs them signed by its build, or verification fails.
+5. **Package** with `productbuild --component <app> /Applications`, signed with the installer identity, and check it with `pkgutil --check-signature`.
+6. **Validate and upload** with `xcrun altool --validate-app`, then `--upload-package --wait`, authenticated with the App Store Connect key from [Credentials](#credentials). altool can exit 0 when App Store Connect refuses the package, so a log line with `UPLOAD FAILED`, `BUILD-STATUS: FAILED`, `IMPORT-STATUS: FAILED` or `ERROR ITMS-` fails the run. Logs are in `~/Library/Caches/shipit/<app>-<hash>/appstore-<build>/`.
+7. **Tag** `v<version>-<build>`, as every lane does.
+
+`--dry-run` prints every command and runs none. `ship beta macAppStore --skip-upload` stops after validation and tags nothing; `ship release` takes `--skip-upload` only for the mac lane, since a store release would otherwise submit an older build. `ship ci` runs the lane as a dry run.
+
+codigo's block, a Rust app built by `cargo` through its own script:
+
+```json
+"macAppStore": {
+  "kind": "command",
+  "build": "scripts/bundle.sh",
+  "app": "target/release/codigo.app",
+  "bundleId": "dev.darkroom.codigo",
+  "entitlements": "assets/appstore/codigo.entitlements",
+  "privacyManifest": "assets/appstore/PrivacyInfo.xcprivacy",
+  "provisioningProfile": "~/.appstoreconnect/codigo/codigo_Mac_App_Store.provisionprofile",
+  "infoPlist": {
+    "CFBundleDisplayName": "codigo",
+    "CFBundleInfoDictionaryVersion": "6.0",
+    "CFBundleSupportedPlatforms": ["MacOSX"],
+    "LSMinimumSystemVersion": "13.0",
+    "ITSAppUsesNonExemptEncryption": false,
+    "NSHumanReadableCopyright": "Copyright 2026 Darkroom Engineering LLC"
+  }
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `macAppStore.kind`, `scheme`, `build`, `app`, `bundleId`, `architectures`, `dir`, `copy`, `checks` | As for `mac`. |
+| `macAppStore.entitlements` | Required. Repo-relative entitlements file; the store needs at least the App Sandbox. |
+| `macAppStore.provisioningProfile` | Required. The Mac App Store provisioning profile. `~` expands; a relative path is in the repository. |
+| `macAppStore.privacyManifest` | Repo-relative `PrivacyInfo.xcprivacy` copied into the app. |
+| `macAppStore.infoPlist` | Info.plist keys written before signing: strings, `true`/`false`, or arrays of strings. Use it for what the store needs and the build leaves out, such as `LSMinimumSystemVersion` and `ITSAppUsesNonExemptEncryption`. |
 
 ## Windows
 

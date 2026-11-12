@@ -6,7 +6,12 @@ import { LaneNotImplementedError, lanesFor, parseConfig } from "./config.ts";
 const parse = (raw: unknown) => parseConfig(JSON.stringify(raw), "/apps/demo");
 const base = { name: "Demo", version: { file: "VERSION" } };
 const ios = { kind: "xcodegen", scheme: "Demo", bundleId: "a.b" };
-const mac = { scheme: "Demo", bundleId: "a.b.mac" };
+const store = {
+  scheme: "Demo",
+  bundleId: "a.b.mac",
+  entitlements: "Demo.entitlements",
+  provisioningProfile: "Demo.provisionprofile",
+};
 
 describe("the real configs parse unchanged", () => {
   for (const name of ["nocam", "mareas", "pokefolio"]) {
@@ -74,16 +79,15 @@ describe("new top-level fields", () => {
 });
 
 describe("target blocks without a lane", () => {
-  test("accepts all four with their fields", () => {
+  test("accepts all three with their fields", () => {
     const config = parse({
       ...base,
-      macAppStore: { ...mac, dir: "macos", copy: ["secrets.json"], checks: ["make test"] },
-      linux: { dir: "linux" },
+      linux: { dir: "linux", copy: ["secrets.json"], checks: ["make test"] },
       tauri: { dir: "src-tauri" },
       npm: { package: "@darkroom/thing" },
     });
-    expect(config.macAppStore).toEqual({ ...mac, dir: "macos", copy: ["secrets.json"], checks: ["make test"] });
-    expect(parse({ ...base, macAppStore: mac }).macAppStore?.dir).toBe(".");
+    expect(config.linux).toEqual({ dir: "linux", copy: ["secrets.json"], checks: ["make test"] });
+    expect(parse({ ...base, linux: {} }).linux?.dir).toBe(".");
     expect(config.tauri?.dir).toBe("src-tauri");
     expect(config.npm?.package).toBe("@darkroom/thing");
     expect(config.ios).toBeUndefined();
@@ -97,7 +101,7 @@ describe("target blocks without a lane", () => {
   });
 
   test("a config with no target at all is still rejected", () => {
-    expect(() => parse(base)).toThrow("targets: configure at least one platform (ios, android, mac,");
+    expect(() => parse(base)).toThrow("targets: configure at least one platform (ios, android, mac, macAppStore,");
   });
 });
 
@@ -111,19 +115,26 @@ describe("lanesFor", () => {
     expect(() => lanesFor(parse({ ...base, ios }), "android")).toThrow("ship.json has no android section");
   });
 
+  test("macAppStore has a lane", () => {
+    const config = parse({ ...base, ios, macAppStore: store });
+    expect(lanesFor(config)).toEqual(["ios", "macAppStore"]);
+    expect(lanesFor(config, "macAppStore")).toEqual(["macAppStore"]);
+    expect(() => lanesFor(parse({ ...base, ios }), "macAppStore")).toThrow("ship.json has no macAppStore section");
+  });
+
   test("a target with no lane fails, configured or not", () => {
-    const config = parse({ ...base, ios, macAppStore: mac });
-    expect(() => lanesFor(config, "macAppStore")).toThrow(`macAppStore: ${notImplemented}`);
+    const config = parse({ ...base, ios, linux: {} });
+    expect(() => lanesFor(config, "linux")).toThrow(`linux: ${notImplemented}`);
     expect(() => lanesFor(config, "npm")).toThrow(LaneNotImplementedError);
   });
 
   test("running every target fails when one has no lane, and names the way out", () => {
-    expect(() => lanesFor(parse({ ...base, ios, macAppStore: mac }))).toThrow(
-      `macAppStore: ${notImplemented}; pass ios to ship only that`,
+    expect(() => lanesFor(parse({ ...base, ios, macAppStore: store, linux: {} }))).toThrow(
+      `linux: ${notImplemented}; pass ios or macAppStore to ship only that`,
     );
     expect(() => lanesFor(parse({ ...base, tauri: {}, npm: { package: "x" } }))).toThrow(
       `tauri, npm: ${notImplemented}`,
     );
-    expect(lanesFor(parse({ ...base, ios, macAppStore: mac }), "ios")).toEqual(["ios"]);
+    expect(lanesFor(parse({ ...base, ios, linux: {} }), "ios")).toEqual(["ios"]);
   });
 });

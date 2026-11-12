@@ -64,11 +64,46 @@ export interface TargetConfig {
   checks: string[];
 }
 
-/** A Mac app built with Xcode: `mac` is signed and notarized for direct download, `macAppStore` goes to the store. */
-export interface MacConfig extends TargetConfig {
-  scheme: string;
+/**
+ * How a Mac lane gets its unsigned app: an Xcode scheme archived with signing off, or a shell command run from the
+ * repository root that leaves the app at `appPath`.
+ */
+export type MacSource =
+  | {
+      /** `xcodegen` runs `xcodegen generate` in `dir` before building. */
+      kind: "xcodeproj" | "xcodegen";
+      scheme: string;
+    }
+  | {
+      kind: "command";
+      build: string;
+      /** Repo-relative path of the app `build` leaves behind. */
+      appPath: string;
+    };
+
+/** Fields both Mac lanes share: `mac` is signed and notarized for direct download, `macAppStore` goes to the store. */
+export interface MacAppFields extends TargetConfig {
   bundleId: string;
+  /** The built bundle's name, such as `Programa.app`. */
+  app: string;
+  architectures: string[];
 }
+
+/** The Mac App Store lane: Apple Distribution signing, a signed installer package, and an altool upload. */
+export interface MacAppStoreFields extends MacAppFields {
+  /** Repo-relative entitlements file; a store app needs at least the App Sandbox. */
+  entitlements: string;
+  /** The Mac App Store provisioning profile, embedded in the app. `~` expands; relative paths are in the repository. */
+  provisioningProfile: string;
+  /** Repo-relative PrivacyInfo.xcprivacy copied into the app's Resources. */
+  privacyManifest: string | null;
+  /** Info.plist keys written into the app before signing, such as LSMinimumSystemVersion. */
+  infoPlist: Record<string, InfoPlistValue>;
+}
+
+export type InfoPlistValue = string | boolean | string[];
+
+export type MacAppStoreConfig = MacAppStoreFields & MacSource;
 
 /** Sparkle archives on one GitHub release, such as Programa's `rolling` release. */
 export interface GithubHosting {
@@ -91,18 +126,15 @@ export interface R2Hosting {
 export type MacHosting = GithubHosting | R2Hosting;
 
 /** The direct-download lane: Developer ID signing, notarization, a DMG and a Sparkle feed. */
-export interface MacDirectConfig extends MacConfig {
-  /** `xcodegen` runs `xcodegen generate` in `dir` before building. */
-  kind: "xcodeproj" | "xcodegen";
-  /** The built bundle's name, such as `Programa.app`. */
-  app: string;
-  architectures: string[];
+export interface MacDirectFields extends MacAppFields {
   /** The app's SUFeedURL. Installed copies read it, so ship never changes it. */
   feedUrl: string;
   /** The app's SUPublicEDKey. Installed copies trust only this key, so ship never changes it. */
   publicKey: string;
   /** Keychain account of the Sparkle EdDSA private key. CI passes the key in SPARKLE_PRIVATE_KEY instead. */
   sparkleAccount: string;
+  /** Folder of Sparkle's tools (generate_keys, generate_appcast) when the app does not get them from SwiftPM. */
+  sparkleBin: string | null;
   /** Repo-relative entitlements file for the app itself. */
   entitlements: string | null;
   /** App-relative nested code signed before the app, deepest first; `*` matches within one path segment. */
@@ -123,6 +155,8 @@ export interface MacDirectConfig extends MacConfig {
   dmg: string;
   hosting: MacHosting;
 }
+
+export type MacDirectConfig = MacDirectFields & MacSource;
 
 /** Azure Artifact Signing (formerly Trusted Signing). The runner signs in with azure/login over OIDC first. */
 export interface WindowsSigning {
@@ -200,7 +234,7 @@ export interface ShipConfig {
   ios?: IosConfig;
   android?: AndroidConfig;
   mac?: MacDirectConfig;
-  macAppStore?: MacConfig;
+  macAppStore?: MacAppStoreConfig;
   windows?: WindowsConfig;
   linux?: TargetConfig;
   tauri?: TargetConfig;
@@ -208,11 +242,11 @@ export interface ShipConfig {
 }
 
 /** Targets with a lane: ship can build and release them. */
-export const PLATFORMS = ["ios", "android", "mac", "windows"] as const;
+export const PLATFORMS = ["ios", "android", "mac", "macAppStore", "windows"] as const;
 export type Platform = (typeof PLATFORMS)[number];
 
 /** Targets ship.json accepts whose lanes do not exist yet. */
-export const PENDING_TARGETS = ["macAppStore", "linux", "tauri", "npm"] as const;
+export const PENDING_TARGETS = ["linux", "tauri", "npm"] as const;
 export type PendingTarget = (typeof PENDING_TARGETS)[number];
 export type Target = Platform | PendingTarget;
 
@@ -399,15 +433,6 @@ function parseTarget<T extends object>(
   return config;
 }
 
-const parseMac = (raw: Raw, name: string, errors: string[]): MacConfig =>
-  parseTarget(
-    raw,
-    name,
-    errors,
-    (reader) => ({ scheme: reader.string("scheme"), bundleId: reader.string("bundleId") }),
-    ["scheme", "bundleId"],
-  );
-
 const WINDOWS_RUNTIMES = ["win-x64", "win-arm64", "win-x86"] as const;
 /** Values that end up inside the cmd.exe signing template, so a quote cannot break out of it. */
 const NO_QUOTES = /^[^"]+$/;
@@ -438,7 +463,10 @@ function parseWindowsRelease(raw: Raw | undefined, errors: string[]): WindowsRel
     return { repo: "", tag: "" };
   }
   const reader = new Reader(raw, "windows.release.");
-  const release: WindowsRelease = { repo: reader.string("repo"), tag: reader.string("tag") };
+  const release: WindowsRelease = {
+    repo: reader.string("repo"),
+    tag: reader.string("tag"),
+  };
   if (release.repo && !/^[\w.-]+\/[\w.-]+$/.test(release.repo))
     reader.errors.push("windows.release.repo: expected owner/name");
   reader.rejectUnknown(["repo", "tag"]);
@@ -513,7 +541,11 @@ function parseHosting(raw: Raw | undefined, errors: string[]): MacHosting {
     reader.rejectUnknown(["type", "bucket", "accountId", "profile"]);
   } else {
     if (type && type !== "github") reader.errors.push('mac.hosting.type: expected "github" or "r2"');
-    hosting = { type: "github", repo: reader.string("repo"), tag: reader.string("tag") };
+    hosting = {
+      type: "github",
+      repo: reader.string("repo"),
+      tag: reader.string("tag"),
+    };
     if (hosting.repo && !/^[\w.-]+\/[\w.-]+$/.test(hosting.repo))
       reader.errors.push("mac.hosting.repo: expected owner/name");
     reader.rejectUnknown(["type", "repo", "tag"]);
@@ -522,14 +554,118 @@ function parseHosting(raw: Raw | undefined, errors: string[]): MacHosting {
   return hosting;
 }
 
+const MAC_APP_KEYS = ["kind", "scheme", "build", "bundleId", "app", "architectures"];
+
+/**
+ * The fields both Mac lanes share. An Xcode build names its scheme and the bundle it archives; a command build names
+ * the command and the path of the app it leaves, whose last segment is the bundle name.
+ */
+function parseMacApp(reader: Reader, name: string, appName: string, local: string[]): MacAppFields & MacSource {
+  const kind = reader.optionalString("kind") ?? "xcodeproj";
+  const app = reader.optionalString("app");
+  const architectures = reader.strings("architectures");
+  const fields = {
+    dir: reader.optionalString("dir") ?? ".",
+    copy: reader.strings("copy"),
+    checks: reader.strings("checks"),
+    bundleId: reader.string("bundleId"),
+    architectures: architectures.length ? architectures : ["arm64"],
+  };
+  if (fields.architectures.some((arch) => !ARCHITECTURES.includes(arch)))
+    local.push(`${name}.architectures: expected some of ${ARCHITECTURES.join(", ")}`);
+  if (kind === "command") {
+    if (reader.optionalString("scheme")) local.push(`${name}.scheme: a command build has no scheme`);
+    const appPath = app ?? "";
+    if (!app) local.push(`${name}.app: a command build needs the repo-relative path of the .app it builds`);
+    else if (!app.endsWith(".app") || isAbsolute(app) || app.startsWith("~") || app.split("/").includes(".."))
+      local.push(`${name}.app: expected a path inside the repository ending in .app, such as target/release/Demo.app`);
+    return { ...fields, kind, build: reader.string("build"), appPath, app: basename(appPath) };
+  }
+  if (kind !== "xcodeproj" && kind !== "xcodegen")
+    local.push(`${name}.kind: expected "xcodeproj", "xcodegen" or "command"`);
+  if (reader.optionalString("build")) local.push(`${name}.build: only a "command" build runs a build command`);
+  const bundle = app ?? `${appName}.app`;
+  if (!bundle.endsWith(".app") || bundle.includes("/"))
+    local.push(`${name}.app: expected a bundle name ending in .app`);
+  return {
+    ...fields,
+    kind: kind === "xcodegen" ? "xcodegen" : "xcodeproj",
+    scheme: reader.string("scheme"),
+    app: bundle,
+  };
+}
+
+const PLIST_KEY = /^[A-Za-z][\w-]*$/;
+
+function parseInfoPlist(raw: Raw | undefined, errors: string[]): Record<string, InfoPlistValue> {
+  if (!raw) return {};
+  const entries: Record<string, InfoPlistValue> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const valid =
+      (typeof value === "string" && value) ||
+      typeof value === "boolean" ||
+      (Array.isArray(value) && value.every((item) => typeof item === "string" && item));
+    if (!PLIST_KEY.test(key)) errors.push(`macAppStore.infoPlist.${key}: expected an Info.plist key name`);
+    else if (!valid)
+      errors.push(`macAppStore.infoPlist.${key}: expected a string, true or false, or an array of strings`);
+    else entries[key] = value as InfoPlistValue;
+  }
+  return entries;
+}
+
+function parseMacAppStore(raw: Raw, appName: string, errors: string[]): MacAppStoreConfig {
+  const reader = new Reader(raw, "macAppStore.");
+  const local: string[] = [];
+  const config: MacAppStoreConfig = {
+    ...parseMacApp(reader, "macAppStore", appName, local),
+    entitlements: reader.string("entitlements"),
+    provisioningProfile: reader.string("provisioningProfile"),
+    privacyManifest: reader.optionalString("privacyManifest"),
+    infoPlist: parseInfoPlist(reader.object("infoPlist"), local),
+  };
+  reader.rejectUnknown([
+    "dir",
+    "copy",
+    "checks",
+    ...MAC_APP_KEYS,
+    "entitlements",
+    "provisioningProfile",
+    "privacyManifest",
+    "infoPlist",
+  ]);
+  errors.push(...reader.errors, ...local);
+  return config;
+}
+
 function parseMacDirect(raw: Raw, appName: string, errors: string[]): MacDirectConfig {
-  const keys = [
-    "kind",
-    "app",
-    "architectures",
+  const reader = new Reader(raw, "mac.");
+  const local: string[] = [];
+  const config: MacDirectConfig = {
+    ...parseMacApp(reader, "mac", appName, local),
+    feedUrl: reader.string("feedUrl"),
+    publicKey: reader.string("publicKey"),
+    sparkleAccount: reader.optionalString("sparkleAccount") ?? "ed25519",
+    sparkleBin: reader.optionalString("sparkleBin"),
+    entitlements: reader.optionalString("entitlements"),
+    sign: reader.strings("sign"),
+    helperEntitlements: reader.stringMap("helperEntitlements"),
+    requiredEntitlements: reader.strings("requiredEntitlements"),
+    forbiddenEntitlements: reader.strings("forbiddenEntitlements"),
+    binaries: reader.strings("binaries"),
+    notaryProfile: reader.optionalString("notaryProfile"),
+    deltas: reader.count("deltas", 1),
+    dmg: reader.optionalString("dmg") ?? `${appName}-mac.dmg`,
+    hosting: parseHosting(reader.object("hosting"), local),
+  };
+  reader.rejectUnknown([
+    "dir",
+    "copy",
+    "checks",
+    ...MAC_APP_KEYS,
     "feedUrl",
     "publicKey",
     "sparkleAccount",
+    "sparkleBin",
     "entitlements",
     "sign",
     "helperEntitlements",
@@ -540,43 +676,7 @@ function parseMacDirect(raw: Raw, appName: string, errors: string[]): MacDirectC
     "deltas",
     "dmg",
     "hosting",
-  ];
-  const local: string[] = [];
-  const config = parseTarget(
-    raw,
-    "mac",
-    errors,
-    (reader) => {
-      const kind = reader.optionalString("kind") ?? "xcodeproj";
-      if (kind !== "xcodeproj" && kind !== "xcodegen") local.push('mac.kind: expected "xcodeproj" or "xcodegen"');
-      const architectures = reader.strings("architectures");
-      return {
-        scheme: reader.string("scheme"),
-        bundleId: reader.string("bundleId"),
-        kind: kind === "xcodegen" ? ("xcodegen" as const) : ("xcodeproj" as const),
-        app: reader.optionalString("app") ?? `${appName}.app`,
-        architectures: architectures.length ? architectures : ["arm64"],
-        feedUrl: reader.string("feedUrl"),
-        publicKey: reader.string("publicKey"),
-        sparkleAccount: reader.optionalString("sparkleAccount") ?? "ed25519",
-        entitlements: reader.optionalString("entitlements"),
-        sign: reader.strings("sign"),
-        helperEntitlements: reader.stringMap("helperEntitlements"),
-        requiredEntitlements: reader.strings("requiredEntitlements"),
-        forbiddenEntitlements: reader.strings("forbiddenEntitlements"),
-        binaries: reader.strings("binaries"),
-        notaryProfile: reader.optionalString("notaryProfile"),
-        deltas: reader.count("deltas", 1),
-        dmg: reader.optionalString("dmg") ?? `${appName}-mac.dmg`,
-        hosting: parseHosting(reader.object("hosting"), local),
-      };
-    },
-    ["scheme", "bundleId", ...keys],
-  );
-  if (!config.app.endsWith(".app") || config.app.includes("/"))
-    local.push("mac.app: expected a bundle name ending in .app");
-  if (config.architectures.some((arch) => !ARCHITECTURES.includes(arch)))
-    local.push(`mac.architectures: expected some of ${ARCHITECTURES.join(", ")}`);
+  ]);
   if (config.feedUrl && !/^https:\/\/[^/]+\/(.*\/)?appcast\.xml$/.test(config.feedUrl))
     local.push("mac.feedUrl: expected an https URL of an appcast.xml");
   else if (config.feedUrl) {
@@ -592,7 +692,7 @@ function parseMacDirect(raw: Raw, appName: string, errors: string[]): MacDirectC
   for (const path of [...config.sign, ...config.binaries])
     if (!path.startsWith("Contents/") || path.split("/").includes(".."))
       local.push(`mac: ${path} must be a path inside the app, starting with Contents/`);
-  errors.push(...local);
+  errors.push(...reader.errors, ...local);
   return config;
 }
 
@@ -622,7 +722,10 @@ function parseUpdate(raw: Raw, errors: string[]): UpdateConfig {
   const env = reader.object("envCheck");
   if (env) {
     const envReader = new Reader(env, "ios.update.envCheck.");
-    envCheck = { key: envReader.string("key"), value: envReader.string("value") };
+    envCheck = {
+      key: envReader.string("key"),
+      value: envReader.string("value"),
+    };
     envReader.rejectUnknown(["key", "value"]);
     reader.errors.push(...envReader.errors);
   }
@@ -740,7 +843,7 @@ export function parseConfig(text: string, root: string): ShipConfig {
   const npm = top.object("npm");
   const none = () => ({});
   if (mac) config.mac = parseMacDirect(mac, config.name, errors);
-  if (macAppStore) config.macAppStore = parseMac(macAppStore, "macAppStore", errors);
+  if (macAppStore) config.macAppStore = parseMacAppStore(macAppStore, config.name, errors);
   if (windows) config.windows = parseWindows(windows, errors);
   if (linux) config.linux = parseTarget(linux, "linux", errors, none);
   if (tauri) config.tauri = parseTarget(tauri, "tauri", errors, none);
@@ -868,5 +971,10 @@ export function loadCredentials(config: ShipConfig): AscCredentials {
   const keyPath = expandHome(
     get("KEY_PATH", "ASC_KEY_PATH") ?? join(homedir(), ".appstoreconnect", "private_keys", `AuthKey_${keyId}.p8`),
   );
-  return { keyId, issuerId, keyPath, teamId: get("APPLE_TEAM_ID") ?? DEFAULT_TEAM_ID };
+  return {
+    keyId,
+    issuerId,
+    keyPath,
+    teamId: get("APPLE_TEAM_ID") ?? DEFAULT_TEAM_ID,
+  };
 }

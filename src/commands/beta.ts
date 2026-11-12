@@ -1,10 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { openVersion } from "../appstore.ts";
+import { openVersion, type StoreLane } from "../appstore.ts";
 import { Asc } from "../asc.ts";
 import { buildAndroid } from "../build-android.ts";
 import { buildIos } from "../build-ios.ts";
 import { shipMac } from "../build-mac.ts";
+import { shipMacAppStore } from "../build-mac-appstore.ts";
 import { buildsHere, pinnedRun, publishRelease, shipWindows } from "../build-windows.ts";
 import {
   lanesFor,
@@ -42,7 +43,10 @@ export interface BetaOptions {
   skipChecks: boolean;
   /** Dry runs only: build this ref instead of main, to test a branch before it lands. */
   ref?: string;
-  /** Mac only: build, sign, notarize and write the appcast, then stop before uploading or tagging. */
+  /**
+   * Mac lanes only: mac builds, signs, notarizes and writes the appcast, macAppStore builds, packages and validates;
+   * both stop before uploading or tagging.
+   */
   skipUpload?: boolean;
 }
 
@@ -84,8 +88,10 @@ export function buildTags(input: {
 export async function beta(config: ShipConfig, options: BetaOptions) {
   const requested = lanesFor(config, options.platform);
   if (options.ref && !options.dry) throw new Error("--ref only works with --dry-run; real builds ship main");
-  if (options.skipUpload && requested.some((platform) => platform !== "mac"))
-    throw new Error("--skip-upload is for the mac lane; pass mac, or use --dry-run for ios and android");
+  if (options.skipUpload && requested.some((platform) => platform !== "mac" && platform !== "macAppStore"))
+    throw new Error(
+      "--skip-upload is for the mac lanes; pass mac or macAppStore, or use --dry-run for ios and android",
+    );
   await assertRepoRoot(config.root);
   const unlock = lock(config);
   try {
@@ -99,23 +105,38 @@ export async function beta(config: ShipConfig, options: BetaOptions) {
 export async function runBeta(config: ShipConfig, requested: Platform[], options: BetaOptions) {
   const { dry } = options;
   let platforms = requested;
-  const { ios, mac } = config;
+  const { ios, mac, macAppStore } = config;
   const windowsHere = platforms.includes("windows") && buildsHere();
 
-  const credentials = ios && platforms.includes("ios") ? loadCredentials(config) : undefined;
-  const asc = credentials ? new Asc(credentials, dry) : undefined;
-  const appId = asc && ios ? (await asc.app(ios.bundleId)).id : undefined;
+  let credentials = ios && platforms.includes("ios") ? loadCredentials(config) : undefined;
+  let asc = credentials ? new Asc(credentials, dry) : undefined;
+  let appId = asc && ios ? (await asc.app(ios.bundleId)).id : undefined;
+  // The Mac App Store lane uploads with altool, which reads the key itself; ship only reads the store's versions.
+  const storeAsc = macAppStore && platforms.includes("macAppStore") ? new Asc(loadCredentials(config), dry) : undefined;
 
   // Release what GitHub has. App Store Connect stops taking builds of a version once it is approved, so an
-  // iOS build first moves the version on, and a new version gets builds of every platform.
+  // iOS or Mac App Store build first moves the version on, and a new version gets builds of every platform.
   await fetchMain(config.root);
   await fetchTags(config.root);
   const pinned = await pinnedRun(config, platforms);
   let version = pinned?.version ?? (await mainVersion(config));
-  if (asc && appId) {
-    const opened = await openVersion(config, asc, appId, dry);
+  const stores: { asc: Asc; appId: string; lane: StoreLane }[] = [];
+  if (asc && appId) stores.push({ asc, appId, lane: "ios" });
+  if (storeAsc && macAppStore)
+    stores.push({ asc: storeAsc, appId: (await storeAsc.app(macAppStore.bundleId)).id, lane: "macAppStore" });
+  for (const store of stores) {
+    const head = await mainVersion(config);
+    const opened = await openVersion(config, store.asc, store.appId, dry, store.lane);
     version = opened.version;
     if (opened.bumped) platforms = platformsOf(config);
+    // One store moving the version on moves it for every lane, so the other store is not asked to move it again.
+    if (opened.version !== head) break;
+  }
+  // A Mac App Store bump builds every platform, so iOS can join the run here and needs its key and app.
+  if (ios && platforms.includes("ios") && !credentials) {
+    credentials = loadCredentials(config);
+    asc = new Asc(credentials, dry);
+    appId = (await asc.app(ios.bundleId)).id;
   }
 
   // One instant for every build number of this run.
@@ -136,6 +157,7 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
         ...(platforms.includes("ios") ? (ios?.copy ?? []) : []),
         ...(platforms.includes("android") ? (config.android?.copy ?? []) : []),
         ...(platforms.includes("mac") ? (mac?.copy ?? []) : []),
+        ...(platforms.includes("macAppStore") ? (macAppStore?.copy ?? []) : []),
         ...(windowsHere ? (config.windows?.copy ?? []) : []),
       ]);
       // A dry run after a bump builds the version the bump would have pushed.
@@ -151,6 +173,7 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
           ios?.checks.length ||
           config.android?.checks.length ||
           mac?.checks.length ||
+          macAppStore?.checks.length ||
           (windowsHere && config.windows?.checks.length))
       ) {
         await run(
@@ -170,6 +193,7 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
           ...(platforms.includes("ios") ? (ios?.checks ?? []) : []),
           ...(platforms.includes("android") ? (config.android?.checks ?? []) : []),
           ...(platforms.includes("mac") ? (mac?.checks ?? []) : []),
+          ...(platforms.includes("macAppStore") ? (macAppStore?.checks ?? []) : []),
           ...(windowsHere ? (config.windows?.checks ?? []) : []),
         ];
         for (const check of checks) {
@@ -189,6 +213,7 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
       let iosUploaded = false;
       let iosBuilt = false;
       let macPublished = false;
+      let storeUploaded = false;
       let androidBuilt = false;
       if (platforms.includes("android") && config.android) {
         try {
@@ -231,6 +256,22 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
           failures.push(`mac: ${errorMessage(error)}`);
         }
       }
+      if (platforms.includes("macAppStore")) {
+        try {
+          const result = await shipMacAppStore({
+            config,
+            worktree,
+            version,
+            build,
+            dry,
+            skipUpload: options.skipUpload ?? false,
+          });
+          storeUploaded = result.uploaded;
+          shipped ||= result.uploaded;
+        } catch (error) {
+          failures.push(`macAppStore: ${errorMessage(error)}`);
+        }
+      }
       let windowsRelease: WindowsRelease | undefined;
       if (platforms.includes("windows") && config.windows) {
         try {
@@ -269,9 +310,11 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
             ? iosUploaded
             : platform === "mac"
               ? macPublished
-              : platform === "windows"
-                ? Boolean(windowsRelease)
-                : true,
+              : platform === "macAppStore"
+                ? storeUploaded
+                : platform === "windows"
+                  ? Boolean(windowsRelease)
+                  : true,
         );
         for (const { tag, message } of tagged(names)) {
           try {
