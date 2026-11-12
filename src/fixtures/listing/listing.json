@@ -1,0 +1,17 @@
+{
+  "name": "NoCam Film",
+  "subtitle": "Analog film & VHS camcorder",
+  "description": "NoCam Film turns your iPhone into a 90s film camera.\n\nPRIVATE BY DESIGN\nNo accounts, no ads.",
+  "keywords": "camera,vintage,retro,90s,grain",
+  "privacyPolicyUrl": "https://nocamfilm.com/privacy",
+  "supportUrl": "https://nocamfilm.com/support",
+  "marketingUrl": "https://nocamfilm.com",
+  "supportEmail": "support@nocamfilm.example",
+  "promotionalText": "Nine film stocks, five tape looks and a fisheye.",
+  "screenshots": { "ios": "out/ios", "android": "~/nocam-shots/android" },
+  "privacy": "shared/store/privacy.json",
+  "play": {
+    "shortDescription": "Analog film camera and VHS camcorder",
+    "fullDescription": "NoCam Film turns your phone into a 90s film camera."
+  }
+}

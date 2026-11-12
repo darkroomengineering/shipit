@@ -1,6 +1,10 @@
 import { type Asc, attr, type Resource } from "./asc.ts";
-import type { ShipConfig } from "./config.ts";
-import { fetchMain, mainVersion, proposeVersion, showMain } from "./git.ts";
+import type { IosConfig, ShipConfig } from "./config.ts";
+import { fetchMain, mainVersion, proposeVersion } from "./git.ts";
+import { type AppStoreText, appStoreProblems, loadListing, mainSource } from "./listing.ts";
+
+export { CREDIT, withCredit } from "./listing.ts";
+
 import { errorMessage, log } from "./log.ts";
 import { fileNotes, releaseNotes } from "./notes.ts";
 import { bump } from "./version.ts";
@@ -27,16 +31,6 @@ const DAY = 24 * 60 * 60 * 1000;
 interface Listing {
   description?: string;
   keywords?: string;
-}
-
-/** Closes every store description an Incubator app pushes. */
-export const CREDIT = "A sidequest by Darkroom Engineering Incubator.";
-const DESCRIPTION_LIMIT = 4000;
-
-/** The description with the credit line as its last paragraph, added once. */
-export function withCredit(description: string): string {
-  if (description.includes(CREDIT)) return description;
-  return [description.trimEnd(), CREDIT].filter(Boolean).join("\n\n");
 }
 
 const versionFields = "fields[appStoreVersions]=versionString,appStoreState";
@@ -109,10 +103,11 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean, una
   }
   const buildNumber = attr(build, "version") ?? "";
 
-  // Store text shared with other apps lives in a repo file (description, keywords); it is read from GitHub's main.
+  // Store text shared with other apps lives in the repo (`ios.listing`); its description and keywords are read from
+  // GitHub's main.
   // It is read before anything changes in App Store Connect, so a missing or malformed file cannot leave a
   // withdrawn submission behind.
-  const listing = await readListing(config, ios.listing);
+  const listing = await readListing(config, ios);
 
   const live = versions.find((candidate) => attr(candidate, "appStoreState") === "READY_FOR_SALE");
   const liveBuild = live
@@ -169,24 +164,18 @@ export async function releaseIos(config: ShipConfig, asc: Asc, dry: boolean, una
   await submit(asc, app.id, target.id, version, build, live ? notes : undefined, listing);
 }
 
-async function readListing(config: ShipConfig, file: string | null | undefined): Promise<Listing> {
-  if (!file) return {};
-  let parsed: unknown;
+async function readListing(config: ShipConfig, ios: IosConfig): Promise<Listing> {
+  if (!ios.listing) return {};
+  let appStore: AppStoreText;
   try {
-    parsed = JSON.parse(await showMain(config.root, file));
+    ({ appStore } = await loadListing(await mainSource(config.root), ios.listing, ios.listingFormat));
   } catch (error) {
-    throw new Error(`ios.listing ${file} on main is unreadable: ${errorMessage(error)}`);
+    throw new Error(`ios.listing ${ios.listing} on main is unreadable: ${errorMessage(error)}`);
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-    throw new Error(`ios.listing ${file} on main must be a JSON object`);
-  const listing = parsed as Listing;
-  if (typeof listing.description !== "string") return listing;
-  const description = withCredit(listing.description);
-  if (description.length > DESCRIPTION_LIMIT)
-    throw new Error(
-      `ios.listing ${file}: the description with the credit line is ${description.length} characters; App Store Connect allows ${DESCRIPTION_LIMIT}`,
-    );
-  return { ...listing, description };
+  const listing = { description: appStore.description, keywords: appStore.keywords };
+  const problems = appStoreProblems(listing);
+  if (problems.length) throw new Error(`ios.listing ${ios.listing}: ${problems.join("; ")}`);
+  return listing;
 }
 
 /** Cancels the review submissions in `states` whose items include this version, and returns how many. */

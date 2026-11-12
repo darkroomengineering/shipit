@@ -89,7 +89,8 @@ At the repo root. Unknown keys are rejected so typos show up.
 | `ios.copy`, `android.copy` | Gitignored files or folders (repo-relative) copied into the build worktree, such as `AntoCam/Secrets.swift`. A missing one stops the build. |
 | `ios.preArchive` | Optional executable (repo-relative, committed). It runs in the worktree after the archive is built and before it is exported or uploaded, and gets `SHIP_ARCHIVE`, `SHIP_VERSION` and `SHIP_BUILD_NUMBER` (expo also gets `SHIP_APP_BUNDLE`). A non-zero exit stops the build before anything leaves the machine. |
 | `ios.keepAlive` | `"75d"`: the nightly job re-uploads a beta when the newest TestFlight upload is older than this, before the 90-day expiry. Needs no state file; it reads the upload date from App Store Connect. |
-| `ios.listing` | Optional repo-relative JSON file with `description` and `keywords`, sent with each App Review submission. The description gets "A sidequest by Darkroom Engineering Incubator." as its last line unless it already has it. |
+| `ios.listing` | Optional repo-relative store listing, read from main: a JSON file or a fastlane metadata folder (see `ios.listingFormat`). `ship listing` pushes all of it; each App Review submission also sends its description and keywords. Both stores' descriptions get "A sidequest by Darkroom Engineering Incubator." as their last line unless they already have it. |
+| `ios.listingFormat` | `json` (default) or `fastlane`. See [Store listing](#store-listing). |
 | `android.dir` | Folder with `gradlew`. |
 | `android.versionCodeProperty` | Gradle property that receives the version code (`-P<name>=<code>`). |
 | `android.playKey` | Play service account JSON. Without it a bundle is built and left in `~/Desktop/<Name>-Android/` for a manual upload. |
@@ -120,6 +121,18 @@ A config needs at least one target. Asking for a target with no lane (`ship beta
 ```
 
 The first heading must match the version being released. A file still headed with the previous version, a missing file, or one with no lines for a store falls back to commit subjects, and the log says so. Notes over the store's limit (App Store 4000, Play 500 characters) stop the release instead of being cut. When a Play release replaces one still in review, the file's notes are used as written, without the replaced build's notes added.
+
+### Store listing
+
+`ship listing [ios|android] [--dry-run]` pushes the store listing from `ios.listing` on main. It never submits anything for review: the App Store text waits on the version until `ship release` sends it, and the Play edit is committed with `changesNotSentForReview=true`, which asks Play not to send the change for review. Every field is read and checked against the stores' limits (App Store name 30, subtitle 30, keywords 100, promotional text 170, description 4000; Play title 30, short description 80, full description 4000) before either store is called. A dry run reads App Store Connect and prints what would change, and does not contact Play.
+
+- **App Store**, on the version on main, which must still be in preparation: name, subtitle and privacy policy URL; description, keywords, promotional text, support and marketing URLs; the copyright, always "© <year> Darkroom Engineering LLC"; and screenshots, sorted into sets by their pixel size. Only changed fields are written, and a set whose screenshots already match is not uploaded again.
+- **Google Play**, en-US: title, short and full description, and phone screenshots (2 to 8).
+- **App Privacy** answers are checked and printed but not sent: App Store Connect takes them only from a signed-in Apple ID, not the API key ship uses. Enter them in App Store Connect.
+
+`json` is nocam's `shared/store/listing.json`: `name`, `subtitle`, `promotionalText`, `keywords`, `description`, `supportUrl`, `marketingUrl`, `privacyPolicyUrl`, and `play` with `shortDescription`, `fullDescription` and an optional `title` (the name otherwise). Optional `screenshots: { "ios": dir, "android": dir }` and `privacy` (a fastlane `app_privacy_details.json`) are repo-relative, or `~`/absolute paths for screenshots generated outside the repo.
+
+`fastlane` is a deliver metadata folder such as `ios/fastlane/metadata`: `en-US/*.txt` for the App Store, supply's `android/en-US/*.txt` and `android/en-US/images/phoneScreenshots/` for Play, screenshots from `../screenshots/en-US/`, and App Privacy from `../app_privacy_details.json`.
 
 ### Build numbers
 
