@@ -1,0 +1,21 @@
+{
+  "name": "Mesinyer",
+  "nightly": false,
+  "version": { "file": "project.yml", "yaml": "settings.base.MARKETING_VERSION" },
+  "checks": [],
+  "notesPaths": ["windows"],
+  "windows": {
+    "dir": "windows",
+    "publish": "dotnet publish Mesinyer.Windows/Mesinyer.Windows.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -o publish",
+    "publishDir": "publish",
+    "packId": "Mesinyer",
+    "packTitle": "Mesinyer",
+    "mainExe": "Mesinyer.Windows.exe",
+    "runtime": "win-x64",
+    "channel": "win",
+    "vpk": "1.2.161",
+    "workflow": "ship-windows.yml",
+    "release": { "repo": "darkroomengineering/mesinyer-releases", "tag": "rolling" },
+    "signing": null
+  }
+}

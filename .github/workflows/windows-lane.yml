@@ -1,0 +1,130 @@
+name: windows-lane
+
+# The Windows lane on a Windows runner. Apps call it from a workflow_dispatch workflow (ship.json
+# windows.workflow, ship-windows.yml by default; README "Windows" has the caller). `ship beta windows` on a
+# Mac dispatches that workflow with version, build and commit, so the runner builds the same build into the
+# same release and leaves the tag and publishing to the Mac run. Without them the runner is a whole beta.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version the dispatching ship run builds; empty for a standalone run.
+        type: string
+        default: ""
+      build:
+        description: Build number the dispatching ship run uses; empty for a standalone run.
+        type: string
+        default: ""
+      commit:
+        description: Commit on main the dispatching ship run builds; empty for a standalone run.
+        type: string
+        default: ""
+      dry-run:
+        description: Run `ship ci windows`, which builds and packs unsigned and uploads nothing.
+        type: boolean
+        default: false
+      shipit-ref:
+        type: string
+        default: main
+      dotnet-version:
+        type: string
+        default: 10.0.x
+      # Azure Artifact Signing over OIDC. Not secret; pass the caller's repository variables. Empty skips the
+      # login, so a ship.json with windows.signing fails loudly instead of shipping unsigned.
+      azure-client-id:
+        type: string
+        default: ""
+      azure-tenant-id:
+        type: string
+        default: ""
+      azure-subscription-id:
+        type: string
+        default: ""
+    secrets:
+      shipit-token:
+        description: Reads darkroomengineering/shipit, which is private. Defaults to the caller's token.
+        required: false
+      release-token:
+        description: Writes releases in windows.release.repo when that is another repository, such as <app>-releases.
+        required: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      id-token: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the app
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: app
+          ref: main
+          fetch-depth: 0
+
+      - name: Check out shipit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: darkroomengineering/shipit
+          ref: ${{ inputs.shipit-ref }}
+          path: shipit
+          token: ${{ secrets.shipit-token || github.token }}
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - name: Install shipit
+        working-directory: shipit
+        run: bun install --frozen-lockfile
+
+      # ship runs checks and gates with `bash -c`; on this image a bare `bash` can resolve to WSL's.
+      - name: Put Git Bash first on PATH
+        run: '"C:\Program Files\Git\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8'
+
+      - name: Git identity for the build tag
+        working-directory: app
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Azure login for signing
+        if: inputs.azure-client-id != ''
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ inputs.azure-client-id }}
+          tenant-id: ${{ inputs.azure-tenant-id }}
+          subscription-id: ${{ inputs.azure-subscription-id }}
+
+      - name: ship
+        working-directory: app
+        env:
+          GH_TOKEN: ${{ secrets.release-token || github.token }}
+          SHIP_DRY_RUN: ${{ inputs.dry-run }}
+          SHIP_RUN_VERSION: ${{ inputs.version }}
+          SHIP_RUN_BUILD: ${{ inputs.build }}
+          SHIP_RUN_COMMIT: ${{ inputs.commit }}
+        run: |
+          if ($env:SHIP_DRY_RUN -eq 'true') {
+            Remove-Item Env:SHIP_RUN_VERSION, Env:SHIP_RUN_BUILD, Env:SHIP_RUN_COMMIT -ErrorAction SilentlyContinue
+            bun ../shipit/src/cli.ts ci windows
+          } else {
+            bun ../shipit/src/cli.ts beta windows
+          }
+          exit $LASTEXITCODE
+
+      - name: Keep the packages
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-lane-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/shipit-windows-*
+          if-no-files-found: ignore

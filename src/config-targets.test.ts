@@ -74,18 +74,16 @@ describe("new top-level fields", () => {
 });
 
 describe("target blocks without a lane", () => {
-  test("accepts all six with their fields", () => {
+  test("accepts all four with their fields", () => {
     const config = parse({
       ...base,
       macAppStore: { ...mac, dir: "macos", copy: ["secrets.json"], checks: ["make test"] },
-      windows: {},
       linux: { dir: "linux" },
       tauri: { dir: "src-tauri" },
       npm: { package: "@darkroom/thing" },
     });
     expect(config.macAppStore).toEqual({ ...mac, dir: "macos", copy: ["secrets.json"], checks: ["make test"] });
     expect(parse({ ...base, macAppStore: mac }).macAppStore?.dir).toBe(".");
-    expect(config.windows).toEqual({ dir: ".", copy: [], checks: [] });
     expect(config.tauri?.dir).toBe("src-tauri");
     expect(config.npm?.package).toBe("@darkroom/thing");
     expect(config.ios).toBeUndefined();

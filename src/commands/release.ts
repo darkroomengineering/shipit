@@ -1,5 +1,6 @@
 import { releaseIos } from "../appstore.ts";
 import { Asc } from "../asc.ts";
+import { publishRelease } from "../build-windows.ts";
 import { lanesFor, loadCredentials, type ShipConfig, type Target } from "../config.ts";
 import { assertRepoRoot, builtPlatforms, fetchMain, fetchTags, lock, mainRef } from "../git.ts";
 import { errorMessage, log } from "../log.ts";
@@ -49,7 +50,9 @@ export async function release(config: ShipConfig, options: ReleaseOptions) {
         if (platform === "mac") log("mac: the beta is on the app's only Sparkle feed, so there is nothing to promote");
         else if (platform === "ios")
           await releaseIos(config, new Asc(loadCredentials(config), options.dry), options.dry, options.unattended);
-        else await releaseAndroid(config, options.dry);
+        else if (platform === "android") await releaseAndroid(config, options.dry);
+        // Also when the build was skipped: a beta that tagged windows can still have failed before publishing.
+        else if (config.windows) await publishRelease(config.windows.release, options.dry);
       } catch (error) {
         log(`${platform}: failed: ${errorMessage(error)}`);
         failures.push(`${platform}: ${errorMessage(error)}`);
