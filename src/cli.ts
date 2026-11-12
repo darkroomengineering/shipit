@@ -13,6 +13,7 @@ const USAGE = `ship: one release tool for every native app
                                                          run ship beta, then send it to App Review / Play production
   ship listing [ios|android] [--dry-run]                 push the store listing on main; never submits for review
   ship version [patch|minor|major] [--dry-run]           print the version, or bump it on main
+  ship update "what changed" [--dry-run]                 publish main as an over-the-air EAS update (expo, JS only)
   ship ci [ios|android|mac|windows]                      clean origin/main only: run gates, then build every lane (dry run for now)
   ship nightly [--dry-run]                               release every nightly app and keep betas alive
   ship status                                            latest builds and store states
@@ -80,6 +81,14 @@ async function main() {
     case "version": {
       const { versionCommand } = await import("./commands/version.ts");
       return versionCommand(loadConfig(root), { kind: rest[0], dry });
+    }
+    case "update": {
+      const { update } = await import("./commands/update.ts");
+      return update(loadConfig(root), {
+        message: rest.join(" "),
+        dry,
+        allowNativeDiff: process.env.SHIP_ALLOW_NATIVE_DIFF === "1",
+      });
     }
     case "status": {
       const { status } = await import("./commands/status.ts");

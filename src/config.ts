@@ -29,6 +29,20 @@ export interface IosConfig {
   listing: string | null;
   /** How `listing` is laid out: nocam's JSON file, or a fastlane metadata folder. */
   listingFormat: "json" | "fastlane";
+  /** `ship update`: over-the-air publishing for expo apps. */
+  update: UpdateConfig | null;
+}
+
+export interface UpdateConfig {
+  channel: string;
+  /** The EAS environment whose variables the bundle gets (`eas update --environment`). */
+  environment: string | null;
+  /** The pinned eas-cli that publishes, run through bunx, such as `eas-cli@23.1.0`. */
+  easCli: string;
+  /** Repo-relative git pathspecs that change the binary; any change since the runtimeVersion commit refuses. */
+  nativeInputs: string[];
+  /** A variable every `.env*` file in the expo project must leave unset or set to `value`. */
+  envCheck: { key: string; value: string } | null;
 }
 
 export interface AndroidConfig {
@@ -597,6 +611,33 @@ export function feedProblem(hosting: MacHosting, feedUrl: string): string | unde
   return `expected ${base}/latest/download/appcast.xml or ${base}/download/${hosting.tag}/appcast.xml for the github hosting`;
 }
 
+function parseUpdate(raw: Raw, errors: string[]): UpdateConfig {
+  const reader = new Reader(raw, "ios.update.");
+  const easCli = reader.string("easCli");
+  if (easCli && !/^eas-cli@\d+\.\d+\.\d+$/.test(easCli))
+    reader.errors.push('ios.update.easCli: expected a pinned version such as "eas-cli@23.1.0"');
+  const nativeInputs = reader.strings("nativeInputs");
+  if (!nativeInputs.length) reader.errors.push("ios.update.nativeInputs: expected at least one pathspec");
+  let envCheck: UpdateConfig["envCheck"] = null;
+  const env = reader.object("envCheck");
+  if (env) {
+    const envReader = new Reader(env, "ios.update.envCheck.");
+    envCheck = { key: envReader.string("key"), value: envReader.string("value") };
+    envReader.rejectUnknown(["key", "value"]);
+    reader.errors.push(...envReader.errors);
+  }
+  const config: UpdateConfig = {
+    channel: reader.string("channel"),
+    environment: reader.optionalString("environment"),
+    easCli,
+    nativeInputs,
+    envCheck,
+  };
+  reader.rejectUnknown(["channel", "environment", "easCli", "nativeInputs", "envCheck"]);
+  errors.push(...reader.errors);
+  return config;
+}
+
 function parseIos(raw: Raw, errors: string[]): IosConfig {
   const reader = new Reader(raw, "ios.");
   const kind = reader.string("kind");
@@ -610,6 +651,8 @@ function parseIos(raw: Raw, errors: string[]): IosConfig {
   const listingFormat = reader.optionalString("listingFormat") ?? "json";
   if (listingFormat !== "json" && listingFormat !== "fastlane")
     reader.errors.push('ios.listingFormat: expected "json" or "fastlane"');
+  const update = reader.object("update");
+  if (update && kind !== "expo") reader.errors.push("ios.update: over-the-air updates need an expo app");
   const config: IosConfig = {
     kind: kind === "expo" ? "expo" : "xcodegen",
     dir,
@@ -622,6 +665,7 @@ function parseIos(raw: Raw, errors: string[]): IosConfig {
     keepAlive,
     listing: reader.optionalString("listing"),
     listingFormat: listingFormat === "fastlane" ? "fastlane" : "json",
+    update: update ? parseUpdate(update, reader.errors) : null,
   };
   reader.rejectUnknown([
     "kind",
@@ -635,6 +679,7 @@ function parseIos(raw: Raw, errors: string[]): IosConfig {
     "keepAlive",
     "listing",
     "listingFormat",
+    "update",
   ]);
   errors.push(...reader.errors);
   return config;

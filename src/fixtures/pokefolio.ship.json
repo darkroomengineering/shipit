@@ -17,6 +17,27 @@
     "bundleId": "com.arzafran.pokefolio",
     "externalGroups": ["Public Beta"],
     "preArchive": "scripts/ship-pre-archive.sh",
-    "copy": ["apps/mobile/.env.local"]
+    "copy": ["apps/mobile/.env.local"],
+    "update": {
+      "channel": "production",
+      "environment": "production",
+      "easCli": "eas-cli@23.1.0",
+      "nativeInputs": [
+        "apps/mobile/modules/*/ios/**",
+        "apps/mobile/modules/*/*.podspec",
+        "apps/mobile/modules/*/expo-module.config.json",
+        "apps/mobile/app.json",
+        "apps/mobile/package.json",
+        "package.json",
+        "bun.lock",
+        "patches/**",
+        "apps/mobile/targets/**",
+        "apps/mobile/plugins/**"
+      ],
+      "envCheck": {
+        "key": "EXPO_PUBLIC_SUPABASE_URL",
+        "value": "https://jqlyedeiwtmxuovovunu.supabase.co"
+      }
+    }
   }
 }

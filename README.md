@@ -93,6 +93,7 @@ At the repo root. Unknown keys are rejected so typos show up.
 | `ios.keepAlive` | `"75d"`: the nightly job re-uploads a beta when the newest TestFlight upload is older than this, before the 90-day expiry. Needs no state file; it reads the upload date from App Store Connect. |
 | `ios.listing` | Optional repo-relative store listing, read from main: a JSON file or a fastlane metadata folder (see `ios.listingFormat`). `ship listing` pushes all of it; each App Review submission also sends its description and keywords. Both stores' descriptions get "A sidequest by Darkroom Engineering Incubator." as their last line unless they already have it. |
 | `ios.listingFormat` | `json` (default) or `fastlane`. See [Store listing](#store-listing). |
+| `ios.update` | Expo only. Turns on `ship update`: `channel`, a pinned `easCli` (`"eas-cli@23.1.0"`), optional `environment` (passed as `eas update --environment`), `nativeInputs` (repo-relative git pathspecs for everything that changes the binary) and optional `envCheck` (`{ "key", "value" }`). See [Over-the-air updates](#over-the-air-updates). |
 | `android.dir` | Folder with `gradlew`. |
 | `android.versionCodeProperty` | Gradle property that receives the version code (`-P<name>=<code>`). |
 | `android.playKey` | Play service account JSON. Without it a bundle is built and left in `~/Desktop/<Name>-Android/` for a manual upload. |
@@ -148,6 +149,19 @@ With `"buildNumber": "githubRun"` the build number comes from the GitHub Actions
 ### Expo apps
 
 The Expo build is the shell script in `lib/expo-ios.sh`. It runs `expo prebuild`, `pod install` with Hermes built from source under Apple's `tar` (GNU tar leaves `._*` files in frameworks), archives, checks the archive for stray `._*` files, fixes Hermes' `MinimumOSVersion`, generates its dSYM, checks dSYM coverage for the embedded frameworks, and exports or uploads. The clean worktree needs `node_modules`, so `ship beta` runs `bun install --frozen-lockfile` first. Expo apps reuse one worktree between runs (`~/Library/Caches/shipit/<app>-<hash>/worktree`), reset to the commit being built, so Pods and Xcode's derived data stay warm; untracked files are cleaned and ignored files are kept.
+
+### Over-the-air updates
+
+Over-the-air updates are for JavaScript and asset changes only. Anything native (modules, pods, patches, config plugins, the Expo SDK, `runtimeVersion`) ships as a store build through `ship beta`, after a `runtimeVersion` bump. An update reaches every build with the same runtime version, so JavaScript that needs native code those builds lack can crash them.
+
+`ship update "what changed"` publishes the checkout's JavaScript bundle with `bunx <easCli> update --channel <channel> --non-interactive` from the Expo project folder (the parent of `ios.dir`). EAS updates are unsigned unless the account is on Expo's Enterprise plan, so these guards are what tie a published bundle to a reviewed commit. It refuses to publish when:
+
+- the working tree has uncommitted or untracked changes, or a tracked file is marked assume-unchanged or skip-worktree;
+- `HEAD` is not `origin/main` after a fetch (a repository with no `origin` is refused);
+- a path in `nativeInputs` changed since the commit that set the current `expo.runtimeVersion` in `app.json`. That commit is the newest one whose diff adds or removes `"runtimeVersion": "<value>"` exactly as written, so keep `app.json` formatted with a space after the colon. `runtimeVersion` must be a literal string, not a policy;
+- with `envCheck`, a `.env*` file in the Expo project folder (except `*.example`) sets `key` to anything other than `value`. These files are gitignored, so the clean-tree check cannot see them, but Expo inlines them into the bundle.
+
+Every guard runs and prints its result, so one run lists every problem. Then it runs `bun install --frozen-lockfile` and publishes with the message `what changed (<short sha>)`. `--dry-run` runs every guard and prints the install and publish it skipped. `SHIP_ALLOW_NATIVE_DIFF=1` publishes despite native changes, after you have confirmed none of the listed files changes the binary; the message gets ` [native-diff-override]`.
 
 ## Mac direct download
 
@@ -348,6 +362,7 @@ The agent runs `ship nightly` at 03:00 with a PATH that includes `/opt/homebrew/
 ## Other commands
 
 - `ship ci`: for CI runners; on Windows it builds the windows lane (see [Windows](#windows)). It refuses unless the checkout is clean and `HEAD` is `origin/main` after a fetch, records that commit, runs `gates`, builds every lane from that commit as a dry run (the mac lane prints its plan), and checks `origin/main` has not moved before it would publish. Publishing is not wired in yet, so it releases nothing.
+- `ship update "what changed"`: publishes main as an over-the-air update for Expo apps; see [Over-the-air updates](#over-the-air-updates).
 - `ship status`: the latest TestFlight build and its beta review state, App Store version states, and Play internal and production versions.
 - `ship doctor`: tools (`xcodebuild`, `xcodegen` or `pod`, `bun`, `java` for Android), credentials, the key file, the App Store Connect app, each external group, the Play key, and for Expo apps a warning when `ios/.xcode.env.local` points `NODE_BINARY` at a node that no longer exists.
 
