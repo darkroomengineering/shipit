@@ -108,9 +108,9 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
   const { ios, mac, macAppStore } = config;
   const windowsHere = platforms.includes("windows") && buildsHere();
 
-  const credentials = ios && platforms.includes("ios") ? loadCredentials(config) : undefined;
-  const asc = credentials ? new Asc(credentials, dry) : undefined;
-  const appId = asc && ios ? (await asc.app(ios.bundleId)).id : undefined;
+  let credentials = ios && platforms.includes("ios") ? loadCredentials(config) : undefined;
+  let asc = credentials ? new Asc(credentials, dry) : undefined;
+  let appId = asc && ios ? (await asc.app(ios.bundleId)).id : undefined;
   // The Mac App Store lane uploads with altool, which reads the key itself; ship only reads the store's versions.
   const storeAsc = macAppStore && platforms.includes("macAppStore") ? new Asc(loadCredentials(config), dry) : undefined;
 
@@ -131,6 +131,12 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
     if (opened.bumped) platforms = platformsOf(config);
     // One store moving the version on moves it for every lane, so the other store is not asked to move it again.
     if (opened.version !== head) break;
+  }
+  // A Mac App Store bump builds every platform, so iOS can join the run here and needs its key and app.
+  if (ios && platforms.includes("ios") && !credentials) {
+    credentials = loadCredentials(config);
+    asc = new Asc(credentials, dry);
+    appId = (await asc.app(ios.bundleId)).id;
   }
 
   // One instant for every build number of this run.
