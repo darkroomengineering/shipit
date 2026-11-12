@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Asc } from "../asc.ts";
@@ -10,8 +10,37 @@ import { release } from "./release.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 
-/** Folder whose subfolders are scanned for ship.json; SHIPIT_PROJECTS overrides it. */
+/** Folder scanned two levels deep for ship.json; SHIPIT_PROJECTS overrides it. */
 const projectsDir = () => process.env.SHIPIT_PROJECTS ?? join(homedir(), "Developer");
+
+const SKIPPED = new Set(["node_modules", ".worktrees"]);
+
+const subfolders = (dir: string) =>
+  readdirSync(dir)
+    .filter((name) => !name.startsWith(".") && !SKIPPED.has(name))
+    .map((name) => join(dir, name))
+    .filter((path) => statSync(path, { throwIfNoEntry: false })?.isDirectory());
+
+/**
+ * Folders under `root` that hold a ship.json, one or two levels down (`~/Developer/app` and
+ * `~/Developer/@darkroom/app`). A folder with a ship.json is a project, so its own subfolders are not searched.
+ */
+export function findProjects(root: string): string[] {
+  const projects: string[] = [];
+  for (const dir of subfolders(root)) {
+    if (existsSync(join(dir, "ship.json"))) projects.push(dir);
+    else {
+      let children: string[] = [];
+      try {
+        children = subfolders(dir);
+      } catch (error) {
+        log(`${dir}: skipped, ${errorMessage(error)}`);
+      }
+      projects.push(...children.filter((child) => existsSync(join(child, "ship.json"))));
+    }
+  }
+  return projects.sort();
+}
 
 async function keepAlive(config: ShipConfig, dry: boolean): Promise<boolean> {
   const ios = config.ios;
@@ -42,10 +71,7 @@ async function keepAlive(config: ShipConfig, dry: boolean): Promise<boolean> {
  */
 export async function nightly({ dry }: { dry: boolean }) {
   const root = projectsDir();
-  const projects = readdirSync(root, { withFileTypes: true })
-    .filter((entry) => existsSync(join(root, entry.name, "ship.json")))
-    .map((entry) => join(root, entry.name))
-    .sort();
+  const projects = findProjects(root);
   if (!projects.length) return log(`no ship.json under ${root}`);
 
   const failures: string[] = [];

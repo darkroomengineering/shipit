@@ -29,6 +29,16 @@ interface Listing {
   keywords?: string;
 }
 
+/** Closes every store description an Incubator app pushes. */
+export const CREDIT = "A sidequest by Darkroom Engineering Incubator.";
+const DESCRIPTION_LIMIT = 4000;
+
+/** The description with the credit line as its last paragraph, added once. */
+export function withCredit(description: string): string {
+  if (description.includes(CREDIT)) return description;
+  return [description.trimEnd(), CREDIT].filter(Boolean).join("\n\n");
+}
+
 const versionFields = "fields[appStoreVersions]=versionString,appStoreState";
 
 /**
@@ -169,7 +179,14 @@ async function readListing(config: ShipConfig, file: string | null | undefined):
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     throw new Error(`ios.listing ${file} on main must be a JSON object`);
-  return parsed as Listing;
+  const listing = parsed as Listing;
+  if (typeof listing.description !== "string") return listing;
+  const description = withCredit(listing.description);
+  if (description.length > DESCRIPTION_LIMIT)
+    throw new Error(
+      `ios.listing ${file}: the description with the credit line is ${description.length} characters; App Store Connect allows ${DESCRIPTION_LIMIT}`,
+    );
+  return { ...listing, description };
 }
 
 /** Cancels the review submissions in `states` whose items include this version, and returns how many. */

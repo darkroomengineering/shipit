@@ -89,7 +89,7 @@ At the repo root. Unknown keys are rejected so typos show up.
 | `ios.copy`, `android.copy` | Gitignored files or folders (repo-relative) copied into the build worktree, such as `AntoCam/Secrets.swift`. A missing one stops the build. |
 | `ios.preArchive` | Optional executable (repo-relative, committed). It runs in the worktree after the archive is built and before it is exported or uploaded, and gets `SHIP_ARCHIVE`, `SHIP_VERSION` and `SHIP_BUILD_NUMBER` (expo also gets `SHIP_APP_BUNDLE`). A non-zero exit stops the build before anything leaves the machine. |
 | `ios.keepAlive` | `"75d"`: the nightly job re-uploads a beta when the newest TestFlight upload is older than this, before the 90-day expiry. Needs no state file; it reads the upload date from App Store Connect. |
-| `ios.listing` | Optional repo-relative JSON file with `description` and `keywords`, sent with each App Review submission. |
+| `ios.listing` | Optional repo-relative JSON file with `description` and `keywords`, sent with each App Review submission. The description gets "A sidequest by Darkroom Engineering Incubator." as its last line unless it already has it. |
 | `android.dir` | Folder with `gradlew`. |
 | `android.versionCodeProperty` | Gradle property that receives the version code (`-P<name>=<code>`). |
 | `android.playKey` | Play service account JSON. Without it a bundle is built and left in `~/Desktop/<Name>-Android/` for a manual upload. |
@@ -137,7 +137,7 @@ Google Play uses the service account JSON from `android.playKey`. It needs "Rele
 
 ## Nightly
 
-`ship nightly` scans `~/Developer/*/ship.json` (set `SHIPIT_PROJECTS` to scan elsewhere). For each project it runs `ship release` when `nightly` is `true`, and a keep-alive beta when `ios.keepAlive` is due. Projects run one after another and one failure never stops the others; the exit code is non-zero if any failed, and a macOS notification names them. With `--dry-run` it reports what would run and builds nothing.
+`ship nightly` scans `~/Developer/*/ship.json` and `~/Developer/*/*/ship.json`, so apps grouped in a folder such as `~/Developer/@darkroom` are found too. It skips `node_modules`, `.worktrees` and dot folders, and does not look inside a project for more projects. Set `SHIPIT_PROJECTS` to scan another folder. For each project it runs `ship release` when `nightly` is `true`, and a keep-alive beta when `ios.keepAlive` is due. Projects run one after another and one failure never stops the others; the exit code is non-zero if any failed, and a macOS notification names them. With `--dry-run` it reports what would run and builds nothing.
 
 ```sh
 ship install-launchd --dry-run   # print the agent
