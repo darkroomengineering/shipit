@@ -10,6 +10,7 @@ const USAGE = `ship: one release tool for every native app
   ship beta [ios|android] [--dry-run [--ref R]] [--skip-checks] build main, upload to TestFlight / Play internal
   ship release [ios|android] [--dry-run]                 send the newest beta to App Review / Play production
   ship version [patch|minor|major] [--dry-run]           print the version, or bump it on main
+  ship ci [ios|android]                                  clean origin/main only: run gates, then build every lane (dry run for now)
   ship nightly [--dry-run]                               release every nightly app and keep betas alive
   ship status                                            latest builds and store states
   ship doctor                                            check tools, credentials and the app record
@@ -73,6 +74,10 @@ async function main() {
     case "doctor": {
       const { doctor } = await import("./commands/doctor.ts");
       return doctor(loadConfig(root));
+    }
+    case "ci": {
+      const { ci } = await import("./commands/ci.ts");
+      return ci(loadConfig(root), { platform: platformArg() });
     }
     case "nightly": {
       const { nightly } = await import("./commands/nightly.ts");

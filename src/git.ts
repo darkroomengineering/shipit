@@ -28,6 +28,21 @@ export const fetchTags = async (root: string) => {
   if (await hasRemote(root)) await git(root, "fetch", "-q", "--tags", "origin");
 };
 
+/**
+ * Fails unless the checkout is still at `sha` and that is still GitHub's main. `ship ci` checks before it starts
+ * and again right before it publishes, so a newer commit on main ships from its own run instead.
+ */
+export async function assertCurrentMain(root: string, sha: string) {
+  await fetchMain(root);
+  const head = await git(root, "rev-parse", "HEAD");
+  const main = await git(root, "rev-parse", "origin/main");
+  if (head !== sha) throw new Error(`HEAD moved from ${sha.slice(0, 7)} to ${head.slice(0, 7)}`);
+  if (main !== sha)
+    throw new Error(
+      `origin/main is ${main.slice(0, 7)}, not ${sha.slice(0, 7)}; ship ci releases only the current main`,
+    );
+}
+
 /** A file as it is on main (see `mainRef`). */
 export const showMain = async (root: string, file: string) =>
   run(["git", "-C", root, "show", `${await mainRef(root)}:${file}`], { capture: true });

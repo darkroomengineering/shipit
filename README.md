@@ -157,6 +157,7 @@ The agent runs `ship nightly` at 03:00 with a PATH that includes `/opt/homebrew/
 
 ## Other commands
 
+- `ship ci`: for CI runners. It refuses unless the checkout is clean and `HEAD` is `origin/main` after a fetch, records that commit, runs `gates`, builds every lane from that commit as a dry run, and checks `origin/main` has not moved before it would publish. Publishing is not wired in yet, so it releases nothing.
 - `ship status`: the latest TestFlight build and its beta review state, App Store version states, and Play internal and production versions.
 - `ship doctor`: tools (`xcodebuild`, `xcodegen` or `pod`, `bun`, `java` for Android), credentials, the key file, the App Store Connect app, each external group, the Play key, and for Expo apps a warning when `ios/.xcode.env.local` points `NODE_BINARY` at a node that no longer exists.
 
