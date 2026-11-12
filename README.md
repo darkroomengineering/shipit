@@ -103,10 +103,11 @@ At the repo root. Unknown keys are rejected so typos show up.
 | `gates` | Shell commands `ship ci` runs in the checkout before any lane. |
 | `mac` | Mac app for direct download with Sparkle. See [Mac direct download](#mac-direct-download). |
 | `macAppStore` | Mac App Store app: `scheme`, `bundleId`, and optional `dir`, `copy`, `checks`. No lane yet. |
-| `windows`, `linux`, `tauri` | Optional `dir`, `copy`, `checks`. No lane yet. |
+| `windows` | A Velopack app: see [Windows](#windows). |
+| `linux`, `tauri` | Optional `dir`, `copy`, `checks`. No lane yet. |
 | `npm` | `package`, and optional `dir`, `copy`, `checks`. No lane yet. |
 
-A config needs at least one target. Asking for a target with no lane (`ship beta windows`) fails with "lane not implemented yet (INC-998/999/1000)", and so does a command run for every target when the config has one of them, so half an app is never released by accident; pass `ios`, `android` or `mac` to run only those.
+A config needs at least one target. Asking for a target with no lane (`ship beta linux`) fails with "lane not implemented yet (INC-998/999/1000)", and so does a command run for every target when the config has one of them, so half an app is never released by accident; pass `ios`, `android`, `mac` or `windows` to run only those.
 
 ### Release notes
 
@@ -248,6 +249,75 @@ Signing and Sparkle need, besides the App Store Connect key:
 | Sparkle private key | Login keychain, account `sparkleAccount` | `SPARKLE_PRIVATE_KEY`, written to a mode-600 file for generate_appcast and deleted after |
 | Hosting | `gh auth login`, or the aws profile | `GH_TOKEN` with contents write, or the aws keys |
 
+## Windows
+
+`ship beta windows` builds a Velopack installer and update feed, signs them, and puts them on a GitHub release. Velopack only builds on Windows, so the lane runs on a GitHub Actions Windows runner:
+
+- **On Windows** (a runner, or `ship ci` there) ship builds in the clean worktree: runs `publish`, installs the pinned `vpk` and runs `vpk pack`, which signs every binary it packs, `Update.exe` and `Setup.exe` with Azure Artifact Signing. It then checks `Get-AuthenticodeSignature` reports `Valid` for `Setup.exe` and for the main exe inside the full package (vpk signs a copy of `publishDir`, so the folder itself stays unsigned), copies `Setup.exe` to a stable `<packId>-x64-setup.exe` and a versioned `<packId>-<version>-<build>-x64-setup.exe`, checks the copies are byte-identical (SHA-256) and still `Valid`, and uploads them with the feed (`releases.win.json` and the `.nupkg`) to `release.tag` in `release.repo`. Packages go up before the stable name and the feed, so the feed never names a file that is not there yet. A release that does not exist yet is created as a draft and published only after every lane passed and the build is tagged.
+- **On a Mac** ship dispatches the app's `workflow` with `gh workflow run`, passing the version, build number and commit, and follows it with `gh run watch`. The runner builds that commit as that build into the same release and leaves tagging and publishing to the Mac run, so every lane of one run shares one build number and one release.
+- **`--dry-run`** on a Mac prints every command the dispatch and the runner would run and calls nothing remote. On Windows it builds and packs without signing and prints the uploads it skipped.
+
+Velopack's version is `<version>-build.<build>`, so every build is an update even when the version has not moved. Each build uploads full packages only; delta packages are not made yet.
+
+```jsonc
+"windows": {
+  "dir": "windows",                       // where publish runs
+  "publish": "dotnet publish Mesinyer.Windows/Mesinyer.Windows.csproj -c Release -r win-x64 -p:Platform=x64 --self-contained true -o publish",
+  "publishDir": "publish",                // relative to dir; vpk packs this folder
+  "packId": "Mesinyer",                   // Velopack id; never change it, installed copies update by it
+  "packTitle": "Mesinyer",                // default packId
+  "mainExe": "Mesinyer.Windows.exe",
+  "runtime": "win-x64",                   // or win-arm64, win-x86
+  "channel": "win",                       // default win
+  "vpk": "1.2.161",                       // same version as the Velopack NuGet package in the app
+  "workflow": "ship-windows.yml",         // default; the caller workflow below
+  "release": { "repo": "darkroomengineering/mesinyer-releases", "tag": "rolling" },
+  "signing": {                            // null or absent: unsigned, with a warning on every run
+    "endpoint": "https://eus.codesigning.azure.net/",
+    "account": "darkroom",
+    "profile": "darkroom-public",
+    "publisher": "Darkroom Engineering"   // default
+  }
+}
+```
+
+`publish` runs in PowerShell with `SHIP_VERSION`, `SHIP_BUILD_NUMBER` and `SHIP_COMMIT` set; chain several commands with `&&` so a failure stops it. `copy` and `checks` apply on the Windows runner only.
+
+**Signing.** Without `signing` the installer ships unsigned and SmartScreen warns everyone who runs it; ship says so on every run. Signing uses the `sign` CLI against Azure Artifact Signing (formerly Trusted Signing) with the Azure CLI login that `azure/login` makes over OIDC, as Programa's `docs/windows-signing.md` sets up: an Artifact Signing account and Public Trust certificate profile, an Entra app registration with a federated credential for the app repository's `main` branch, and the "Trusted Signing Certificate Profile Signer" role. A `signing` block with no Azure login fails the build instead of shipping unsigned.
+
+**The caller workflow.** Each app adds `.github/workflows/ship-windows.yml`, which `ship beta windows` dispatches and which also runs by hand from the Actions tab:
+
+```yaml
+name: ship-windows
+run-name: ship windows ${{ inputs.build || github.sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      version: { type: string, default: "" }
+      build: { type: string, default: "" }
+      commit: { type: string, default: "" }
+      dry-run: { type: boolean, default: false }
+permissions:
+  contents: write
+  id-token: write
+jobs:
+  windows:
+    uses: darkroomengineering/shipit/.github/workflows/windows-lane.yml@main
+    with:
+      version: ${{ inputs.version }}
+      build: ${{ inputs.build }}
+      commit: ${{ inputs.commit }}
+      dry-run: ${{ inputs.dry-run }}
+      azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+      azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+      azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    secrets:
+      shipit-token: ${{ secrets.SHIPIT_TOKEN }}     # read access to darkroomengineering/shipit
+      release-token: ${{ secrets.RELEASES_TOKEN }}  # write access to release.repo when it is another repository
+```
+
+shipit is private, so its Actions settings must allow access from the organization's repositories, and the runner checks it out with `shipit-token`. Run by hand with no inputs, the workflow is a whole `ship beta windows` on the runner: it picks the build number, tags and publishes. With `dry-run` it runs `ship ci windows`. Packages are kept as a run artifact either way.
+
 ## Credentials
 
 App Store Connect, from the `credentials` file or the environment:
@@ -276,7 +346,7 @@ The agent runs `ship nightly` at 03:00 with a PATH that includes `/opt/homebrew/
 
 ## Other commands
 
-- `ship ci`: for CI runners. It refuses unless the checkout is clean and `HEAD` is `origin/main` after a fetch, records that commit, runs `gates`, builds every lane from that commit as a dry run (the mac lane prints its plan), and checks `origin/main` has not moved before it would publish. Publishing is not wired in yet, so it releases nothing.
+- `ship ci`: for CI runners; on Windows it builds the windows lane (see [Windows](#windows)). It refuses unless the checkout is clean and `HEAD` is `origin/main` after a fetch, records that commit, runs `gates`, builds every lane from that commit as a dry run (the mac lane prints its plan), and checks `origin/main` has not moved before it would publish. Publishing is not wired in yet, so it releases nothing.
 - `ship status`: the latest TestFlight build and its beta review state, App Store version states, and Play internal and production versions.
 - `ship doctor`: tools (`xcodebuild`, `xcodegen` or `pod`, `bun`, `java` for Android), credentials, the key file, the App Store Connect app, each external group, the Play key, and for Expo apps a warning when `ios/.xcode.env.local` points `NODE_BINARY` at a node that no longer exists.
 
