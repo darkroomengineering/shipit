@@ -1,5 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
 import type { ShipConfig } from "./config.ts";
-import { log } from "./log.ts";
+import { log, warn } from "./log.ts";
 import { fileNotes, releaseNotes, versionOfBuild } from "./notes.ts";
 import { newestCode, Play, type PlayRelease } from "./play.ts";
 
@@ -14,6 +15,74 @@ export const versionCodeFor = (at: Date) => Math.floor(at.getTime() / 60_000) - 
 export function buildNumberFor(at: Date): string {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${at.getUTCFullYear()}${pad(at.getUTCMonth() + 1)}${pad(at.getUTCDate())}${pad(at.getUTCHours())}${pad(at.getUTCMinutes())}`;
+}
+
+export interface GithubRun {
+  event: string | undefined;
+  runId: string | undefined;
+  runAttempt: string | undefined;
+  /** The CI run a `workflow_run` release follows. */
+  upstreamRunId?: string;
+  upstreamRunAttempt?: string;
+}
+
+const POSITIVE = /^[1-9][0-9]*$/;
+
+function positive(value: string | undefined, label: string): string {
+  if (!value || !POSITIVE.test(value)) throw new Error(`${label} must be a positive whole number, got ${value}`);
+  return value;
+}
+
+function attempt(value: string | undefined, label: string): string {
+  if (BigInt(positive(value, label)) > 999n) throw new Error(`${label} must be between 1 and 999`);
+  return (value as string).padStart(3, "0");
+}
+
+/**
+ * The build number of a GitHub Actions release, ported from Programa's release_build_identity.js: run ids only grow,
+ * so the number does too, and every attempt of a run gets its own. Programa's feed already holds these 17-digit
+ * builds, which a `yyyyMMddHHmm` build could never pass.
+ */
+export function githubRunBuild(run: GithubRun): string {
+  const runId = positive(run.runId, "GITHUB_RUN_ID");
+  const runAttempt = attempt(run.runAttempt, "GITHUB_RUN_ATTEMPT");
+  if (run.event === "workflow_run")
+    return `${positive(run.upstreamRunId, "the upstream run id")}${attempt(run.upstreamRunAttempt, "the upstream run attempt")}${runAttempt}`;
+  if (run.event === "push") return `${runId}001001`;
+  if (run.event === "workflow_dispatch") return `${runId}001${runAttempt}`;
+  throw new Error(`unsupported release event: ${run.event}`);
+}
+
+/** The GitHub Actions run this process is part of, from the runner's environment and event payload. */
+export function currentGithubRun(env: NodeJS.ProcessEnv = process.env): GithubRun | undefined {
+  if (!env.GITHUB_RUN_ID) return undefined;
+  const run: GithubRun = { event: env.GITHUB_EVENT_NAME, runId: env.GITHUB_RUN_ID, runAttempt: env.GITHUB_RUN_ATTEMPT };
+  if (run.event === "workflow_run" && env.GITHUB_EVENT_PATH && existsSync(env.GITHUB_EVENT_PATH)) {
+    const upstream = (
+      JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8")) as { workflow_run?: Record<string, unknown> }
+    ).workflow_run;
+    run.upstreamRunId = String(upstream?.id ?? "");
+    run.upstreamRunAttempt = String(upstream?.run_attempt ?? "");
+  }
+  return run;
+}
+
+/**
+ * The build number of this run, shared by every platform. `githubRun` apps take it from the Actions run; a dry run
+ * outside Actions falls back to the time so the plan still prints, and a real one refuses.
+ */
+export function runBuildNumber(
+  config: ShipConfig,
+  at: Date,
+  dry: boolean,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (config.buildNumber === "time") return buildNumberFor(at);
+  const run = currentGithubRun(env);
+  if (run) return githubRunBuild(run);
+  if (!dry) throw new Error('buildNumber "githubRun" needs a GitHub Actions run (GITHUB_RUN_ID); release from CI');
+  warn(`buildNumber is "githubRun" and this is not a GitHub Actions run; the dry run uses ${buildNumberFor(at)}`);
+  return buildNumberFor(at);
 }
 
 /** The build number a version code was made from, which names its release tag. */

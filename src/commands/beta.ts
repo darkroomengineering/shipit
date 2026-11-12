@@ -4,6 +4,7 @@ import { openVersion } from "../appstore.ts";
 import { Asc } from "../asc.ts";
 import { buildAndroid } from "../build-android.ts";
 import { buildIos } from "../build-ios.ts";
+import { shipMac } from "../build-mac.ts";
 import {
   lanesFor,
   loadCredentials,
@@ -29,7 +30,7 @@ import {
 } from "../git.ts";
 import { errorMessage, log, run, warn, write } from "../log.ts";
 import { GENERIC_NOTES, notesSince } from "../notes.ts";
-import { buildNumberFor, uploadInternal, versionCodeFor } from "../playlane.ts";
+import { runBuildNumber, uploadInternal, versionCodeFor } from "../playlane.ts";
 import { distribute } from "../testflight.ts";
 import { readVersion, writeVersion } from "../version.ts";
 
@@ -39,6 +40,8 @@ export interface BetaOptions {
   skipChecks: boolean;
   /** Dry runs only: build this ref instead of main, to test a branch before it lands. */
   ref?: string;
+  /** Mac only: build, sign, notarize and write the appcast, then stop before uploading or tagging. */
+  skipUpload?: boolean;
 }
 
 const WHAT_TO_TEST_LIMIT = 2000;
@@ -47,6 +50,8 @@ const WHAT_TO_TEST_LIMIT = 2000;
 export async function beta(config: ShipConfig, options: BetaOptions) {
   const requested = lanesFor(config, options.platform);
   if (options.ref && !options.dry) throw new Error("--ref only works with --dry-run; real builds ship main");
+  if (options.skipUpload && requested.some((platform) => platform !== "mac"))
+    throw new Error("--skip-upload is for the mac lane; pass mac, or use --dry-run for ios and android");
   await assertRepoRoot(config.root);
   const unlock = lock(config);
   try {
@@ -60,7 +65,7 @@ export async function beta(config: ShipConfig, options: BetaOptions) {
 export async function runBeta(config: ShipConfig, requested: Platform[], options: BetaOptions) {
   const { dry } = options;
   let platforms = requested;
-  const { ios } = config;
+  const { ios, mac } = config;
 
   const credentials = ios && platforms.includes("ios") ? loadCredentials(config) : undefined;
   const asc = credentials ? new Asc(credentials, dry) : undefined;
@@ -79,7 +84,7 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
 
   // One instant for every build number of this run.
   const now = new Date();
-  const build = buildNumberFor(now);
+  const build = runBuildNumber(config, now, dry);
   const versionCode = versionCodeFor(now);
   const commit = await git(config.root, "rev-parse", options.ref ?? (await mainRef(config.root)));
   log(
@@ -94,6 +99,7 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
       copyIgnored(config, worktree, [
         ...(platforms.includes("ios") ? (ios?.copy ?? []) : []),
         ...(platforms.includes("android") ? (config.android?.copy ?? []) : []),
+        ...(platforms.includes("mac") ? (mac?.copy ?? []) : []),
       ]);
       // A dry run after a bump builds the version the bump would have pushed.
       const versionFile = join(worktree, config.version.file);
@@ -103,7 +109,11 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
 
       if (
         existsSync(join(worktree, "package.json")) &&
-        (ios?.kind === "expo" || config.checks.length || ios?.checks.length || config.android?.checks.length)
+        (ios?.kind === "expo" ||
+          config.checks.length ||
+          ios?.checks.length ||
+          config.android?.checks.length ||
+          mac?.checks.length)
       ) {
         await run(
           [
@@ -121,6 +131,7 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
           ...config.checks,
           ...(platforms.includes("ios") ? (ios?.checks ?? []) : []),
           ...(platforms.includes("android") ? (config.android?.checks ?? []) : []),
+          ...(platforms.includes("mac") ? (mac?.checks ?? []) : []),
         ];
         for (const check of checks) {
           log(`== ${check}`);
@@ -138,6 +149,7 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
       let shipped = false;
       let iosUploaded = false;
       let iosBuilt = false;
+      let macPublished = false;
       if (platforms.includes("android") && config.android) {
         try {
           const bundle = await buildAndroid({ config, worktree, version, build, versionCode });
@@ -162,13 +174,31 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
           failures.push(`ios: ${errorMessage(error)}`);
         }
       }
+      if (platforms.includes("mac")) {
+        try {
+          const result = await shipMac({
+            config,
+            worktree,
+            version,
+            build,
+            dry,
+            skipUpload: options.skipUpload ?? false,
+          });
+          macPublished = result.published;
+          shipped ||= result.published;
+        } catch (error) {
+          failures.push(`mac: ${errorMessage(error)}`);
+        }
+      }
 
       // The tag maps the build to its commit, for release notes.
       // A tag failure never blocks distribution: the build is already uploaded and testers should get it.
       const tag = `v${version}-${build}`;
       await write(dry, `tagging ${tag} and pushing the tag`, async () => {
         if (!shipped) return;
-        const names = platforms.filter((platform) => (platform === "ios" ? iosUploaded : true)).join(" + ");
+        const names = platforms
+          .filter((platform) => (platform === "ios" ? iosUploaded : platform === "mac" ? macPublished : true))
+          .join(" + ");
         try {
           await tagBuild(config, tag, commit, `${config.name} ${version} build ${build} (${names})`);
           log(`tagged ${tag}`);
@@ -188,7 +218,11 @@ export async function runBeta(config: ShipConfig, requested: Platform[], options
 
       if (failures.length) throw new Error(failures.join("\n"));
       log(
-        dry ? `dry run done: ${version} build ${build} built, nothing uploaded` : `released ${version} build ${build}`,
+        dry
+          ? `dry run done: ${version} build ${build}, nothing uploaded`
+          : options.skipUpload
+            ? `built ${version} build ${build}; --skip-upload published and tagged nothing`
+            : `released ${version} build ${build}`,
       );
     },
     { persistent },

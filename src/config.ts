@@ -12,6 +12,8 @@ export interface VersionSpec {
   json?: string;
   /** Dotted path into a YAML file; the last segment is matched by name on every line that carries it. */
   yaml?: string;
+  /** Pattern whose first capture group is the version; a bump rewrites every match. */
+  regex?: string;
 }
 
 export interface IosConfig {
@@ -39,10 +41,7 @@ export interface AndroidConfig {
 }
 
 /** A file that carries the version besides `version.file`: plain text, a JSON or YAML path, or a regex. */
-export interface VersionFileSpec extends VersionSpec {
-  /** Pattern whose first capture group is the version. */
-  regex?: string;
-}
+export type VersionFileSpec = VersionSpec;
 
 /** Fields every target without a lane accepts until its lane defines more. */
 export interface TargetConfig {
@@ -55,6 +54,60 @@ export interface TargetConfig {
 export interface MacConfig extends TargetConfig {
   scheme: string;
   bundleId: string;
+}
+
+/** Sparkle archives on one GitHub release, such as Programa's `rolling` release. */
+export interface GithubHosting {
+  type: "github";
+  /** `owner/name` of the repository whose release holds the archives. */
+  repo: string;
+  tag: string;
+}
+
+/** Sparkle archives in an R2 bucket served at the feed URL's folder, such as browsee's updates.browsee.app. */
+export interface R2Hosting {
+  type: "r2";
+  bucket: string;
+  /** Cloudflare account id; the S3 endpoint is https://<accountId>.r2.cloudflarestorage.com. */
+  accountId: string;
+  /** aws CLI profile with the bucket keys; AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the environment win. */
+  profile: string | null;
+}
+
+export type MacHosting = GithubHosting | R2Hosting;
+
+/** The direct-download lane: Developer ID signing, notarization, a DMG and a Sparkle feed. */
+export interface MacDirectConfig extends MacConfig {
+  /** `xcodegen` runs `xcodegen generate` in `dir` before building. */
+  kind: "xcodeproj" | "xcodegen";
+  /** The built bundle's name, such as `Programa.app`. */
+  app: string;
+  architectures: string[];
+  /** The app's SUFeedURL. Installed copies read it, so ship never changes it. */
+  feedUrl: string;
+  /** The app's SUPublicEDKey. Installed copies trust only this key, so ship never changes it. */
+  publicKey: string;
+  /** Keychain account of the Sparkle EdDSA private key. CI passes the key in SPARKLE_PRIVATE_KEY instead. */
+  sparkleAccount: string;
+  /** Repo-relative entitlements file for the app itself. */
+  entitlements: string | null;
+  /** App-relative nested code signed before the app, deepest first; `*` matches within one path segment. */
+  sign: string[];
+  /** Entitlements files for entries of `sign`, keyed by the same app-relative path. */
+  helperEntitlements: Record<string, string>;
+  /** Entitlements the app must carry and nested code without its own entitlements must not. */
+  requiredEntitlements: string[];
+  /** Entitlements nothing in the app may carry. */
+  forbiddenEntitlements: string[];
+  /** App-relative Mach-O files that must hold exactly `architectures`, besides the main executable. */
+  binaries: string[];
+  /** notarytool keychain profile for local runs. Without one, and always in CI, the App Store Connect key is used. */
+  notaryProfile: string | null;
+  /** How many previous releases generate_appcast makes delta updates from. */
+  deltas: number;
+  /** Stable download name that always holds the newest DMG. Each build is also published as `<base>-<build>.dmg`. */
+  dmg: string;
+  hosting: MacHosting;
 }
 
 export interface NpmConfig extends TargetConfig {
@@ -91,9 +144,11 @@ export interface ShipConfig {
   secrets: SecretSpec[];
   /** Commands `ship ci` runs in the checkout before any lane. */
   gates: string[];
+  /** Where build numbers come from: the UTC time of the run, or the GitHub Actions run that releases it. */
+  buildNumber: "time" | "githubRun";
   ios?: IosConfig;
   android?: AndroidConfig;
-  mac?: MacConfig;
+  mac?: MacDirectConfig;
   macAppStore?: MacConfig;
   windows?: TargetConfig;
   linux?: TargetConfig;
@@ -102,15 +157,18 @@ export interface ShipConfig {
 }
 
 /** Targets with a lane: ship can build and release them. */
-export type Platform = "ios" | "android";
+export const PLATFORMS = ["ios", "android", "mac"] as const;
+export type Platform = (typeof PLATFORMS)[number];
 
 /** Targets ship.json accepts whose lanes do not exist yet. */
-export const PENDING_TARGETS = ["mac", "macAppStore", "windows", "linux", "tauri", "npm"] as const;
+export const PENDING_TARGETS = ["macAppStore", "windows", "linux", "tauri", "npm"] as const;
 export type PendingTarget = (typeof PENDING_TARGETS)[number];
 export type Target = Platform | PendingTarget;
 
+const isPlatform = (value: string): value is Platform => (PLATFORMS as readonly string[]).includes(value);
+
 export const isTarget = (value: string): value is Target =>
-  value === "ios" || value === "android" || (PENDING_TARGETS as readonly string[]).includes(value);
+  isPlatform(value) || (PENDING_TARGETS as readonly string[]).includes(value);
 
 export class LaneNotImplementedError extends Error {
   constructor(targets: readonly string[], hint = "") {
@@ -181,6 +239,23 @@ class Reader {
     return [];
   }
 
+  count(key: string, fallback: number): number {
+    const value = this.raw[key];
+    if (value === undefined) return fallback;
+    if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
+    this.fail(key, "a whole number, 0 or more");
+    return fallback;
+  }
+
+  stringMap(key: string): Record<string, string> {
+    const value = this.raw[key];
+    if (value === undefined) return {};
+    if (isObject(value) && Object.values(value).every((item) => typeof item === "string" && item))
+      return value as Record<string, string>;
+    this.fail(key, "an object of non-empty strings");
+    return {};
+  }
+
   objects(key: string): Raw[] {
     const value = this.raw[key];
     if (value === undefined) return [];
@@ -209,16 +284,7 @@ function parseVersion(raw: Raw | undefined, errors: string[]): VersionSpec {
     errors.push('version: expected an object such as { "file": "VERSION" }');
     return { file: "" };
   }
-  const reader = new Reader(raw, "version.");
-  const spec: VersionSpec = { file: reader.string("file") };
-  const json = reader.optionalString("json");
-  const yaml = reader.optionalString("yaml");
-  if (json) spec.json = json;
-  if (yaml) spec.yaml = yaml;
-  if (json && yaml) reader.errors.push("version: set json or yaml, not both");
-  reader.rejectUnknown(["file", "json", "yaml"]);
-  errors.push(...reader.errors);
-  return spec;
+  return parseVersionFile(raw, "version.", errors);
 }
 
 function parseVersionFile(raw: Raw, where: string, errors: string[]): VersionFileSpec {
@@ -291,6 +357,126 @@ const parseMac = (raw: Raw, name: string, errors: string[]): MacConfig =>
     ["scheme", "bundleId"],
   );
 
+const ARCHITECTURES = ["arm64", "x86_64"];
+/** A file name with no folder, so it is one asset or object key. */
+const FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function parseHosting(raw: Raw | undefined, errors: string[]): MacHosting {
+  if (!raw) {
+    errors.push('mac.hosting: expected { "type": "github", ... } or { "type": "r2", ... }');
+    return { type: "github", repo: "", tag: "" };
+  }
+  const reader = new Reader(raw, "mac.hosting.");
+  const type = reader.string("type");
+  let hosting: MacHosting;
+  if (type === "r2") {
+    hosting = {
+      type,
+      bucket: reader.string("bucket"),
+      accountId: reader.string("accountId"),
+      profile: reader.optionalString("profile"),
+    };
+    reader.rejectUnknown(["type", "bucket", "accountId", "profile"]);
+  } else {
+    if (type && type !== "github") reader.errors.push('mac.hosting.type: expected "github" or "r2"');
+    hosting = { type: "github", repo: reader.string("repo"), tag: reader.string("tag") };
+    if (hosting.repo && !/^[\w.-]+\/[\w.-]+$/.test(hosting.repo))
+      reader.errors.push("mac.hosting.repo: expected owner/name");
+    reader.rejectUnknown(["type", "repo", "tag"]);
+  }
+  errors.push(...reader.errors);
+  return hosting;
+}
+
+function parseMacDirect(raw: Raw, appName: string, errors: string[]): MacDirectConfig {
+  const keys = [
+    "kind",
+    "app",
+    "architectures",
+    "feedUrl",
+    "publicKey",
+    "sparkleAccount",
+    "entitlements",
+    "sign",
+    "helperEntitlements",
+    "requiredEntitlements",
+    "forbiddenEntitlements",
+    "binaries",
+    "notaryProfile",
+    "deltas",
+    "dmg",
+    "hosting",
+  ];
+  const local: string[] = [];
+  const config = parseTarget(
+    raw,
+    "mac",
+    errors,
+    (reader) => {
+      const kind = reader.optionalString("kind") ?? "xcodeproj";
+      if (kind !== "xcodeproj" && kind !== "xcodegen") local.push('mac.kind: expected "xcodeproj" or "xcodegen"');
+      const architectures = reader.strings("architectures");
+      return {
+        scheme: reader.string("scheme"),
+        bundleId: reader.string("bundleId"),
+        kind: kind === "xcodegen" ? ("xcodegen" as const) : ("xcodeproj" as const),
+        app: reader.optionalString("app") ?? `${appName}.app`,
+        architectures: architectures.length ? architectures : ["arm64"],
+        feedUrl: reader.string("feedUrl"),
+        publicKey: reader.string("publicKey"),
+        sparkleAccount: reader.optionalString("sparkleAccount") ?? "ed25519",
+        entitlements: reader.optionalString("entitlements"),
+        sign: reader.strings("sign"),
+        helperEntitlements: reader.stringMap("helperEntitlements"),
+        requiredEntitlements: reader.strings("requiredEntitlements"),
+        forbiddenEntitlements: reader.strings("forbiddenEntitlements"),
+        binaries: reader.strings("binaries"),
+        notaryProfile: reader.optionalString("notaryProfile"),
+        deltas: reader.count("deltas", 1),
+        dmg: reader.optionalString("dmg") ?? `${appName}-mac.dmg`,
+        hosting: parseHosting(reader.object("hosting"), local),
+      };
+    },
+    ["scheme", "bundleId", ...keys],
+  );
+  if (!config.app.endsWith(".app") || config.app.includes("/"))
+    local.push("mac.app: expected a bundle name ending in .app");
+  if (config.architectures.some((arch) => !ARCHITECTURES.includes(arch)))
+    local.push(`mac.architectures: expected some of ${ARCHITECTURES.join(", ")}`);
+  if (config.feedUrl && !/^https:\/\/[^/]+\/(.*\/)?appcast\.xml$/.test(config.feedUrl))
+    local.push("mac.feedUrl: expected an https URL of an appcast.xml");
+  else if (config.feedUrl) {
+    const problem = feedProblem(config.hosting, config.feedUrl);
+    if (problem) local.push(`mac.feedUrl: ${problem}`);
+  }
+  if (config.publicKey && Buffer.from(config.publicKey, "base64").length !== 32)
+    local.push("mac.publicKey: expected the base64 Ed25519 public key from SUPublicEDKey");
+  if (!config.dmg.endsWith(".dmg") || !FILE_NAME.test(config.dmg))
+    local.push("mac.dmg: expected a file name ending in .dmg, such as Programa-mac.dmg");
+  for (const path of Object.keys(config.helperEntitlements))
+    if (!config.sign.includes(path)) local.push(`mac.helperEntitlements.${path}: not listed in mac.sign`);
+  for (const path of [...config.sign, ...config.binaries])
+    if (!path.startsWith("Contents/") || path.split("/").includes(".."))
+      local.push(`mac: ${path} must be a path inside the app, starting with Contents/`);
+  errors.push(...local);
+  return config;
+}
+
+/**
+ * Why the feed URL cannot be served by the hosting, if it cannot. A GitHub feed is the release's own appcast.xml, or
+ * the latest release's; an R2 feed is appcast.xml at the bucket's root, served at the feed URL's folder.
+ */
+export function feedProblem(hosting: MacHosting, feedUrl: string): string | undefined {
+  if (hosting.type === "r2")
+    return new URL(feedUrl).pathname === "/appcast.xml"
+      ? undefined
+      : "an r2 feed is appcast.xml at the root of the bucket's domain";
+  const base = `https://github.com/${hosting.repo}/releases`;
+  if (feedUrl === `${base}/latest/download/appcast.xml` || feedUrl === `${base}/download/${hosting.tag}/appcast.xml`)
+    return undefined;
+  return `expected ${base}/latest/download/appcast.xml or ${base}/download/${hosting.tag}/appcast.xml for the github hosting`;
+}
+
 function parseIos(raw: Raw, errors: string[]): IosConfig {
   const reader = new Reader(raw, "ios.");
   const kind = reader.string("kind");
@@ -360,6 +546,7 @@ export function parseConfig(text: string, root: string): ShipConfig {
   if (!isObject(raw)) throw new Error(`${join(root, "ship.json")} must hold a JSON object`);
   const top = new Reader(raw, "");
   const errors: string[] = [];
+  const buildNumber = top.optionalString("buildNumber") ?? "time";
   const config: ShipConfig = {
     root,
     name: top.string("name"),
@@ -373,7 +560,9 @@ export function parseConfig(text: string, root: string): ShipConfig {
     changelog: top.optionalString("changelog"),
     secrets: top.objects("secrets").map((raw, i) => parseSecret(raw, `secrets[${i}].`, errors)),
     gates: top.strings("gates"),
+    buildNumber: buildNumber === "githubRun" ? "githubRun" : "time",
   };
+  if (buildNumber !== "time" && buildNumber !== "githubRun") errors.push('buildNumber: expected "time" or "githubRun"');
   const ios = top.object("ios");
   const android = top.object("android");
   if (ios) config.ios = parseIos(ios, errors);
@@ -385,7 +574,7 @@ export function parseConfig(text: string, root: string): ShipConfig {
   const tauri = top.object("tauri");
   const npm = top.object("npm");
   const none = () => ({});
-  if (mac) config.mac = parseMac(mac, "mac", errors);
+  if (mac) config.mac = parseMacDirect(mac, config.name, errors);
   if (macAppStore) config.macAppStore = parseMac(macAppStore, "macAppStore", errors);
   if (windows) config.windows = parseTarget(windows, "windows", errors, none);
   if (linux) config.linux = parseTarget(linux, "linux", errors, none);
@@ -393,7 +582,7 @@ export function parseConfig(text: string, root: string): ShipConfig {
   if (npm)
     config.npm = parseTarget(npm, "npm", errors, (reader) => ({ package: reader.string("package") }), ["package"]);
   if (!targetsOf(config).length)
-    errors.push(`targets: configure at least one platform (${["ios", "android", ...PENDING_TARGETS].join(", ")})`);
+    errors.push(`targets: configure at least one platform (${[...PLATFORMS, ...PENDING_TARGETS].join(", ")})`);
   top.rejectUnknown([
     "name",
     "nightly",
@@ -406,8 +595,8 @@ export function parseConfig(text: string, root: string): ShipConfig {
     "changelog",
     "secrets",
     "gates",
-    "ios",
-    "android",
+    "buildNumber",
+    ...PLATFORMS,
     ...PENDING_TARGETS,
   ]);
   errors.push(...top.errors);
@@ -421,10 +610,7 @@ export function loadConfig(root: string): ShipConfig {
   return parseConfig(readFileSync(path, "utf8"), root);
 }
 
-export const platformsOf = (config: ShipConfig): Platform[] => [
-  ...(config.ios ? (["ios"] as const) : []),
-  ...(config.android ? (["android"] as const) : []),
-];
+export const platformsOf = (config: ShipConfig): Platform[] => PLATFORMS.filter((platform) => config[platform]);
 
 const targetsOf = (config: ShipConfig): Target[] => [
   ...platformsOf(config),
@@ -436,7 +622,7 @@ const targetsOf = (config: ShipConfig): Target[] => [
  * does a run of every target when one of them has no lane, so a half release never passes for a whole one.
  */
 export function lanesFor(config: ShipConfig, requested?: Target): Platform[] {
-  if (requested && requested !== "ios" && requested !== "android") throw new LaneNotImplementedError([requested]);
+  if (requested && !isPlatform(requested)) throw new LaneNotImplementedError([requested]);
   if (requested) {
     if (!config[requested]) throw new Error(`ship.json has no ${requested} section`);
     return [requested];

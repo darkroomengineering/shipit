@@ -30,7 +30,8 @@ export interface ListingOptions {
 }
 
 function platformsFor(config: ShipConfig, requested?: Target): Platform[] {
-  if (!requested) return platformsOf(config);
+  // The mac lane is direct download, which has no store listing.
+  if (!requested) return platformsOf(config).filter((platform) => platform !== "mac");
   if (requested !== "ios" && requested !== "android") throw new Error(`${requested} has no store listing`);
   if (!config[requested]) throw new Error(`ship.json has no ${requested} section`);
   return [requested];
