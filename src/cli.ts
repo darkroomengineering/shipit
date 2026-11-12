@@ -1,17 +1,19 @@
 #!/usr/bin/env bun
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { isTarget, loadConfig, PENDING_TARGETS, type Target } from "./config.ts";
+import { isTarget, loadConfig, PENDING_TARGETS, PLATFORMS, type Target } from "./config.ts";
 import { BusyError } from "./git.ts";
 import { errorMessage } from "./log.ts";
 
 const USAGE = `ship: one release tool for every native app
 
-  ship beta [ios|android] [--dry-run [--ref R]] [--skip-checks] build main, upload to TestFlight / Play internal
-  ship release [ios|android] [--dry-run] [--skip-checks] run ship beta, then send it to App Review / Play production
+  ship beta [ios|android|mac] [--dry-run [--ref R]] [--skip-checks] [--skip-upload]
+                                                         build main, upload to TestFlight / Play internal / the Sparkle feed
+  ship release [ios|android|mac] [--dry-run] [--skip-checks] [--skip-upload]
+                                                         run ship beta, then send it to App Review / Play production
   ship listing [ios|android] [--dry-run]                 push the store listing on main; never submits for review
   ship version [patch|minor|major] [--dry-run]           print the version, or bump it on main
-  ship ci [ios|android]                                  clean origin/main only: run gates, then build every lane (dry run for now)
+  ship ci [ios|android|mac]                              clean origin/main only: run gates, then build every lane (dry run for now)
   ship nightly [--dry-run]                               release every nightly app and keep betas alive
   ship status                                            latest builds and store states
   ship doctor                                            check tools, credentials and the app record
@@ -24,6 +26,7 @@ const { values, positionals } = parseArgs({
   options: {
     "dry-run": { type: "boolean", default: false },
     "skip-checks": { type: "boolean", default: false },
+    "skip-upload": { type: "boolean", default: false },
     ref: { type: "string" },
     C: { type: "string", short: "C" },
     help: { type: "boolean", short: "h", default: false },
@@ -44,7 +47,7 @@ function platformArg(): Target | undefined {
   if (platform === undefined) return undefined;
   if (!isTarget(platform))
     throw new Error(
-      `unknown platform "${platform}": use ios or android (${PENDING_TARGETS.join(", ")} have no lane yet)`,
+      `unknown platform "${platform}": use ${PLATFORMS.join(", ")} (${PENDING_TARGETS.join(", ")} have no lane yet)`,
     );
   return platform;
 }
@@ -57,12 +60,18 @@ async function main() {
         platform: platformArg(),
         dry,
         skipChecks: values["skip-checks"],
+        skipUpload: values["skip-upload"],
         ref: values.ref,
       });
     }
     case "release": {
       const { release } = await import("./commands/release.ts");
-      return release(loadConfig(root), { platform: platformArg(), dry, skipChecks: values["skip-checks"] });
+      return release(loadConfig(root), {
+        platform: platformArg(),
+        dry,
+        skipChecks: values["skip-checks"],
+        skipUpload: values["skip-upload"],
+      });
     }
     case "listing": {
       const { listing } = await import("./commands/listing.ts");

@@ -82,6 +82,27 @@ describe("invalid versions", () => {
   });
 });
 
+describe("regex version files", () => {
+  const pbxproj = { file: "project.pbxproj", regex: "MARKETING_VERSION = ([0-9.]+);" };
+  const text = [
+    "\t\t\t\tMARKETING_VERSION = 0.7.0;",
+    "\t\t\t\tCURRENT_PROJECT_VERSION = 42875290831001002;",
+    "\t\t\t\tMARKETING_VERSION = 0.7.0;",
+    "",
+  ].join("\n");
+
+  test("reads the capture group and rewrites every match, nothing else", () => {
+    expect(readVersion(pbxproj, text)).toBe("0.7.0");
+    expect(writeVersion(pbxproj, text, "0.8.0")).toBe(
+      text.replaceAll("MARKETING_VERSION = 0.7.0;", "MARKETING_VERSION = 0.8.0;"),
+    );
+  });
+
+  test("refuses a file whose matches disagree", () => {
+    expect(() => readVersion(pbxproj, `${text}MARKETING_VERSION = 0.6.0;\n`)).toThrow("matches more than one version");
+  });
+});
+
 describe("bump", () => {
   test("patch, minor and major", () => {
     expect(bump("1.2.3", "patch")).toBe("1.2.4");

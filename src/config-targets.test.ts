@@ -77,15 +77,14 @@ describe("target blocks without a lane", () => {
   test("accepts all six with their fields", () => {
     const config = parse({
       ...base,
-      mac: { ...mac, dir: "macos", copy: ["secrets.json"], checks: ["make test"] },
-      macAppStore: mac,
+      macAppStore: { ...mac, dir: "macos", copy: ["secrets.json"], checks: ["make test"] },
       windows: {},
       linux: { dir: "linux" },
       tauri: { dir: "src-tauri" },
       npm: { package: "@darkroom/thing" },
     });
-    expect(config.mac).toEqual({ ...mac, dir: "macos", copy: ["secrets.json"], checks: ["make test"] });
-    expect(config.macAppStore?.dir).toBe(".");
+    expect(config.macAppStore).toEqual({ ...mac, dir: "macos", copy: ["secrets.json"], checks: ["make test"] });
+    expect(parse({ ...base, macAppStore: mac }).macAppStore?.dir).toBe(".");
     expect(config.windows).toEqual({ dir: ".", copy: [], checks: [] });
     expect(config.tauri?.dir).toBe("src-tauri");
     expect(config.npm?.package).toBe("@darkroom/thing");
@@ -115,16 +114,18 @@ describe("lanesFor", () => {
   });
 
   test("a target with no lane fails, configured or not", () => {
-    const config = parse({ ...base, ios, mac });
-    expect(() => lanesFor(config, "mac")).toThrow(`mac: ${notImplemented}`);
+    const config = parse({ ...base, ios, macAppStore: mac });
+    expect(() => lanesFor(config, "macAppStore")).toThrow(`macAppStore: ${notImplemented}`);
     expect(() => lanesFor(config, "npm")).toThrow(LaneNotImplementedError);
   });
 
   test("running every target fails when one has no lane, and names the way out", () => {
-    expect(() => lanesFor(parse({ ...base, ios, mac }))).toThrow(`mac: ${notImplemented}; pass ios to ship only that`);
+    expect(() => lanesFor(parse({ ...base, ios, macAppStore: mac }))).toThrow(
+      `macAppStore: ${notImplemented}; pass ios to ship only that`,
+    );
     expect(() => lanesFor(parse({ ...base, tauri: {}, npm: { package: "x" } }))).toThrow(
       `tauri, npm: ${notImplemented}`,
     );
-    expect(lanesFor(parse({ ...base, ios, mac }), "ios")).toEqual(["ios"]);
+    expect(lanesFor(parse({ ...base, ios, macAppStore: mac }), "ios")).toEqual(["ios"]);
   });
 });

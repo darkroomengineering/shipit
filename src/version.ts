@@ -25,6 +25,10 @@ export function readVersion(spec: VersionSpec, text: string): string {
     version = typeof value === "string" ? value : undefined;
   } else if (spec.yaml) {
     version = yamlLine(lastKey(spec.yaml)).exec(text)?.[3];
+  } else if (spec.regex) {
+    const found = new Set([...text.matchAll(new RegExp(spec.regex, "gm"))].map((match) => match[1]));
+    if (found.size > 1) throw new Error(`${spec.file}: ${spec.regex} matches more than one version: ${[...found]}`);
+    version = [...found][0];
   } else {
     version = text.trim();
   }
@@ -39,6 +43,17 @@ export function readVersion(spec: VersionSpec, text: string): string {
 /** Returns the file text with the version replaced; formatting, quotes and comments around it stay as they were. */
 export function writeVersion(spec: VersionSpec, text: string, next: string): string {
   const current = readVersion(spec, text);
+  if (spec.regex) {
+    let out = "";
+    let at = 0;
+    for (const match of text.matchAll(new RegExp(spec.regex, "gmd"))) {
+      const span = match.indices?.[1];
+      if (!span) continue;
+      out += text.slice(at, span[0]) + next;
+      at = span[1];
+    }
+    return out + text.slice(at);
+  }
   if (spec.yaml)
     return text.replace(
       yamlLine(lastKey(spec.yaml)),

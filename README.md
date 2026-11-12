@@ -2,6 +2,8 @@
 
 One release tool for every native app. Run `ship beta` in an app's folder and the latest `main` on GitHub is built, uploaded to TestFlight (and Google Play internal testing for Android), tagged, and sent to your external testers. Run `ship release` and the newest beta goes to App Review (or Play production). A nightly job can do the second step for you.
 
+Mac apps that update through Sparkle get the same two commands: `ship beta mac` signs, notarizes and publishes a DMG and its appcast (see [Mac direct download](#mac-direct-download)).
+
 Nothing else is needed: no fastlane, no Ruby, no npm packages at runtime. It is Bun, `git`, `xcodebuild` and the App Store Connect and Google Play APIs.
 
 ## Install
@@ -17,10 +19,10 @@ Run `ship` from the app's folder (where `ship.json` lives, which is also the git
 
 ## Two lanes
 
-| Lane | iOS | Android | Command |
-| --- | --- | --- | --- |
-| Beta | TestFlight, external groups, Beta App Review | Play internal track | `ship beta` |
-| Release | Beta, then App Review (App Store) | Beta, then Play production | `ship release` |
+| Lane | iOS | Android | Mac | Command |
+| --- | --- | --- | --- | --- |
+| Beta | TestFlight, external groups, Beta App Review | Play internal track | Notarized DMG on the app's Sparkle feed | `ship beta` |
+| Release | Beta, then App Review (App Store) | Beta, then Play production | The beta (one feed, nothing to promote) | `ship release` |
 
 **Beta.** `ship beta` always builds from a clean worktree of `origin/main`, so uncommitted work never ships. A repository with no `origin` remote builds its local `main` and pushes nothing (tags and version bumps stay local). It:
 
@@ -75,7 +77,7 @@ At the repo root. Unknown keys are rejected so typos show up.
 | --- | --- |
 | `name` | Display name, used in tags, notifications and the Android bundle file name. |
 | `nightly` | `true` opts the app into `ship nightly` releases. Default `false`. |
-| `version` | Where the version lives. `{ "file": "VERSION" }` for a plain file, `{ "file": "app.json", "json": "expo.version" }` for JSON, `{ "file": "project.yml", "yaml": "settings.base.MARKETING_VERSION" }` for YAML. Edits are targeted: JSON keeps its formatting, and YAML changes every line whose key matches the last segment (XcodeGen files often repeat `MARKETING_VERSION` per target). |
+| `version` | Where the version lives. `{ "file": "VERSION" }` for a plain file, `{ "file": "app.json", "json": "expo.version" }` for JSON, `{ "file": "project.yml", "yaml": "settings.base.MARKETING_VERSION" }` for YAML, `{ "file": "App.xcodeproj/project.pbxproj", "regex": "MARKETING_VERSION = ([0-9.]+);" }` for anything else (the first capture group; every match must agree). Edits are targeted: JSON keeps its formatting, YAML changes every line whose key matches the last segment (XcodeGen files often repeat `MARKETING_VERSION` per target), and a regex rewrites every match. |
 | `checks` | Shell commands run in the build worktree before building. Skip with `--skip-checks`. |
 | `ios.checks`, `android.checks` | The same, run only when that platform is being built, after its `copy` files are in the worktree. |
 | `notesPaths` | Only commits that touch these paths become release notes. Empty means the whole repo. |
@@ -95,14 +97,16 @@ At the repo root. Unknown keys are rejected so typos show up.
 | `android.versionCodeProperty` | Gradle property that receives the version code (`-P<name>=<code>`). |
 | `android.playKey` | Play service account JSON. Without it a bundle is built and left in `~/Desktop/<Name>-Android/` for a manual upload. |
 | `versionFiles` | More files that carry the version: `{ "file", "json" }`, `{ "file", "yaml" }`, `{ "file", "regex" }` (the first capture group is the version) or `{ "file" }` for a plain file. Validated only; nothing stamps them yet. |
-| `changelog` | Repo-relative changelog file. Validated only. |
+| `changelog` | Repo-relative changelog file, default `CHANGELOG.md`. The mac lane requires a section for the version and puts it in the update window. |
+| `buildNumber` | `"time"` (default): the UTC time of the run, see [Build numbers](#build-numbers). `"githubRun"`: the GitHub Actions run, for apps whose feed already carries run-derived builds. |
 | `secrets` | `{ "name", "path" or "env", "onePassword", "restoreHint" }` for each secret the release needs: where it lives, the 1Password item that holds it, and how to get it back. Validated only. |
 | `gates` | Shell commands `ship ci` runs in the checkout before any lane. |
-| `mac`, `macAppStore` | Mac app for direct download or the Mac App Store: `scheme`, `bundleId`, and optional `dir`, `copy`, `checks`. No lane yet. |
+| `mac` | Mac app for direct download with Sparkle. See [Mac direct download](#mac-direct-download). |
+| `macAppStore` | Mac App Store app: `scheme`, `bundleId`, and optional `dir`, `copy`, `checks`. No lane yet. |
 | `windows`, `linux`, `tauri` | Optional `dir`, `copy`, `checks`. No lane yet. |
 | `npm` | `package`, and optional `dir`, `copy`, `checks`. No lane yet. |
 
-A config needs at least one target. Asking for a target with no lane (`ship beta mac`) fails with "lane not implemented yet (INC-998/999/1000)", and so does a command run for every target when the config has one of them, so half an app is never released by accident; pass `ios` or `android` to run only those.
+A config needs at least one target. Asking for a target with no lane (`ship beta windows`) fails with "lane not implemented yet (INC-998/999/1000)", and so does a command run for every target when the config has one of them, so half an app is never released by accident; pass `ios`, `android` or `mac` to run only those.
 
 ### Release notes
 
@@ -136,11 +140,113 @@ The first heading must match the version being released. A file still headed wit
 
 ### Build numbers
 
-One instant per run. iOS gets `yyyyMMddHHmm` in UTC. Android gets minutes since the Unix epoch minus 29,000,000 (the formula nocam already uses). The Android code maps back to the same iOS-style build number, which is how `ship release` finds the release tag for a Play build.
+One instant per run. iOS and Mac get `yyyyMMddHHmm` in UTC. Android gets minutes since the Unix epoch minus 29,000,000 (the formula nocam already uses). The Android code maps back to the same iOS-style build number, which is how `ship release` finds the release tag for a Play build.
+
+With `"buildNumber": "githubRun"` the build number comes from the GitHub Actions run instead, as Programa's release workflow makes it: the CI run id and attempt plus the release attempt for a `workflow_run` release, `<run id>001001` for a push, `<run id>001<attempt>` for a manual run. Programa's feed already holds these 17-digit builds, and a `yyyyMMddHHmm` build could never pass them. Such an app releases from CI; a dry run on a Mac falls back to the time and says so, and a real run refuses.
 
 ### Expo apps
 
 The Expo build is the shell script in `lib/expo-ios.sh`. It runs `expo prebuild`, `pod install` with Hermes built from source under Apple's `tar` (GNU tar leaves `._*` files in frameworks), archives, checks the archive for stray `._*` files, fixes Hermes' `MinimumOSVersion`, generates its dSYM, checks dSYM coverage for the embedded frameworks, and exports or uploads. The clean worktree needs `node_modules`, so `ship beta` runs `bun install --frozen-lockfile` first. Expo apps reuse one worktree between runs (`~/Library/Caches/shipit/<app>-<hash>/worktree`), reset to the commit being built, so Pods and Xcode's derived data stay warm; untracked files are cleaned and ignored files are kept.
+
+## Mac direct download
+
+`ship beta mac` builds main in a clean worktree, as the phone lanes do, and publishes a Developer ID signed, notarized DMG to the app's Sparkle feed. `ship release mac` runs the same beta: a Mac app has one feed and no channels yet, so the published beta is the release and there is nothing to promote. Steps, in order:
+
+1. **Preflight.** `CHANGELOG.md` (or `changelog`) has a section for the version, headed `## 1.2.3` or `## [1.2.3] - date`. The build number is higher than every build in the published appcast, read from `feedUrl` (builds compare as whole numbers of any length). The Sparkle private key matches `publicKey`: in CI the key in `SPARKLE_PRIVATE_KEY` is checked before anything runs, on a Mac the keychain key (`generate_keys --account <sparkleAccount> -p`) right after Swift packages resolve, before the archive. The hosting is ready (below). Any failure stops the run.
+2. **Stamp and archive.** `xcodegen generate` first when `kind` is `xcodegen`, then `xcodebuild archive` with `MARKETING_VERSION`, `CURRENT_PROJECT_VERSION` and `ARCHS` set and signing off. ship writes `feedUrl` and `publicKey` into the app's `SUFeedURL` and `SUPublicEDKey` (the keys must already be in its Info.plist) and checks the bundle id, version and build.
+3. **Sign** inside-out with the hardened runtime and a timestamp: Sparkle's XPC services (keeping their entitlements), `Autoupdate`, `Updater.app` and the framework, then each `sign` entry (with its `helperEntitlements`), then the app with `entitlements`. Never `--deep`, which would copy the app's entitlements onto every helper. Then `codesign --verify --deep --strict`.
+4. **Verify.** The app carries every `requiredEntitlements` key and no `forbiddenEntitlements` key; `sign` entries without their own entitlements carry neither; Sparkle's parts and `sign` entries with `helperEntitlements` keep their own but no forbidden key; the main executable and each `binaries` entry hold exactly `architectures` (`lipo -archs`).
+5. **Notarize** the app with `notarytool` and staple it, so a copy dragged out of the DMG works offline, and check it with `spctl -a -vv`.
+6. **DMG** with `hdiutil`: the app and an Applications link, signed, notarized, stapled and checked with `spctl`.
+7. **Appcast.** Sparkle's `generate_appcast` (from the app's SwiftPM artifacts, or `SPARKLE_BIN`) extends the published appcast, makes deltas from the newest `deltas` releases, embeds the CHANGELOG section as the update notes, and signs the archive and, when the app sets `SURequireSignedFeed`, the feed. Each build's DMG is `<dmg base>-<build>.dmg`, a URL that never changes, because Sparkle rejects an archive whose bytes changed under a signed URL (error 4005). The appcast is checked, never edited, and kept as `appcast-<build>.xml` in `~/Library/Caches/shipit/<app>-<hash>/appcasts/` and on the host, for rollback.
+8. **Upload** archives first, then `appcast-<build>.xml`, then `appcast.xml`, then the stable `dmg` name, so the feed never names a file that is not there. On GitHub an archive that already exists stops the upload, since `gh` uploads it without `--clobber`; on R2 `aws s3 cp` would overwrite it, so there only the per-build names keep archives apart.
+9. **Tag** `v<version>-<build>`, as every lane does.
+
+`--dry-run` prints every command it would run and runs none of them; it reads the public feed to check the build number and reports what a real run would refuse, then keeps printing. `--skip-upload` runs everything through the appcast, notarization included, and prints the uploads instead of running them; nothing is published or tagged. `ship ci` runs the mac lane as a dry run, like every lane.
+
+```jsonc
+{
+  "name": "Programa",
+  "version": { "file": "GhosttyTabs.xcodeproj/project.pbxproj", "regex": "MARKETING_VERSION = ([0-9.]+);" },
+  "changelog": "CHANGELOG.md",
+  "buildNumber": "githubRun",
+  "mac": {
+    "scheme": "programa",
+    "bundleId": "com.darkroom.programa",
+    "app": "Programa.app",
+    "architectures": ["arm64"],
+    "feedUrl": "https://github.com/darkroomengineering/programa/releases/latest/download/appcast.xml",
+    "publicKey": "K4pw6WgryZqN0NI9t/FaNdroYWdSSuy2gejC3utPCQQ=",
+    "entitlements": "programa.entitlements",
+    "sign": ["Contents/PlugIns/ProgramaDockTilePlugin.plugin", "Contents/Resources/bin/programa", "Contents/Resources/bin/programa-mcp"],
+    "requiredEntitlements": ["com.apple.security.cs.allow-jit", "com.apple.security.device.camera"],
+    "forbiddenEntitlements": ["com.apple.security.cs.disable-library-validation"],
+    "binaries": ["Contents/Resources/bin/programa"],
+    "dmg": "programa-macos.dmg",
+    "hosting": { "type": "github", "repo": "darkroomengineering/programa", "tag": "rolling" },
+    "checks": ["git submodule update --init --recursive", "./scripts/download-prebuilt-ghosttykit.sh"]
+  }
+}
+```
+
+browsee's feed stays on R2:
+
+```jsonc
+"mac": {
+  "kind": "xcodegen",
+  "dir": "mac",
+  "scheme": "browsee",
+  "bundleId": "com.darkroom.browsee",
+  "app": "browsee.app",
+  "feedUrl": "https://updates.browsee.app/appcast.xml",
+  "publicKey": "/v8xMtkp3VzK22CyAGfZTkbyW0u+5haIT+uEZ7nu970=",
+  "sparkleAccount": "browsee",
+  "notaryProfile": "browsee-notary",
+  "entitlements": "mac/Support/browsee.entitlements",
+  "sign": [
+    "Contents/Frameworks/Chromium Embedded Framework.framework/Versions/A/Libraries/*.dylib",
+    "Contents/Frameworks/Chromium Embedded Framework.framework",
+    "Contents/Frameworks/browsee Helper (GPU).app",
+    "Contents/Frameworks/browsee Helper (Renderer).app",
+    "Contents/Helpers/browsee-mcp"
+  ],
+  "helperEntitlements": {
+    "Contents/Frameworks/browsee Helper (GPU).app": "mac/Support/browsee Helper (GPU).entitlements",
+    "Contents/Frameworks/browsee Helper (Renderer).app": "mac/Support/browsee Helper (Renderer).entitlements"
+  },
+  "dmg": "Browsee.dmg",
+  "hosting": { "type": "r2", "bucket": "browsee-updates", "accountId": "<account id>", "profile": "browsee-r2" }
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `mac.scheme`, `mac.bundleId` | Xcode scheme, and the bundle id the built app must have. |
+| `mac.kind` | `xcodeproj` (default) builds the project in `dir`; `xcodegen` runs `xcodegen generate` first. |
+| `mac.dir`, `mac.copy`, `mac.checks` | As for iOS. `checks` run in the worktree before the build, so they can also fetch what the build needs. |
+| `mac.app` | The built bundle's name. Default `<name>.app`. |
+| `mac.architectures` | `arm64` and/or `x86_64`. Default `["arm64"]`. Passed to the build as `ARCHS` and verified. |
+| `mac.feedUrl` | The app's `SUFeedURL`. Required. ship never changes it; it must be a URL the hosting serves. |
+| `mac.publicKey` | The app's `SUPublicEDKey`, the key installed copies trust. Required. ship never changes or regenerates it. |
+| `mac.sparkleAccount` | Keychain account of the Sparkle private key on a Mac. Default `ed25519`, Sparkle's own default. |
+| `mac.entitlements` | Repo-relative entitlements file for the app. |
+| `mac.sign` | App-relative nested code to sign before the app, deepest first, such as helpers and command-line tools. `*` matches within one path segment (`Contents/Frameworks/browsee Helper*.app`). Each entry must exist. Sparkle's parts are signed without listing them. |
+| `mac.helperEntitlements` | Entitlements files for `sign` entries, keyed by the same path. |
+| `mac.requiredEntitlements`, `mac.forbiddenEntitlements` | The entitlement allow and deny lists checked after signing. |
+| `mac.binaries` | More Mach-O files whose architectures are checked, besides the main executable. |
+| `mac.notaryProfile` | `notarytool` keychain profile for runs on a Mac. Without one, and always when `CI` is set, notarytool uses the App Store Connect key from [Credentials](#credentials). |
+| `mac.deltas` | Previous releases generate_appcast makes delta updates from. Default 1. |
+| `mac.dmg` | The stable download name, always the newest DMG. Default `<name>-mac.dmg`. Set it when the app already publishes another name (`Browsee.dmg`, `programa-macos.dmg`). |
+| `mac.hosting` | `{ "type": "github", "repo", "tag" }`: archives on one GitHub release, with the feed at `releases/latest/download/appcast.xml` (the release must be the latest) or `releases/download/<tag>/appcast.xml`; uploads with `gh`. `{ "type": "r2", "bucket", "accountId", "profile" }`: an R2 bucket served at the feed's domain, with the feed at `/appcast.xml`; uploads with the `aws` CLI, and `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` win over the profile. |
+
+Signing and Sparkle need, besides the App Store Connect key:
+
+| What | On a Mac | In CI |
+| --- | --- | --- |
+| Developer ID Application certificate | In the keychain; ship picks team `APPLE_TEAM_ID` (default ZNHHMX2RP6), or set `SIGN_IDENTITY` | Imported into the runner's keychain before ship runs; set `SIGN_IDENTITY` |
+| Notarization | `xcrun notarytool store-credentials <notaryProfile>` once | The App Store Connect key (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `KEY_PATH`) |
+| Sparkle private key | Login keychain, account `sparkleAccount` | `SPARKLE_PRIVATE_KEY`, written to a mode-600 file for generate_appcast and deleted after |
+| Hosting | `gh auth login`, or the aws profile | `GH_TOKEN` with contents write, or the aws keys |
 
 ## Credentials
 
@@ -170,7 +276,7 @@ The agent runs `ship nightly` at 03:00 with a PATH that includes `/opt/homebrew/
 
 ## Other commands
 
-- `ship ci`: for CI runners. It refuses unless the checkout is clean and `HEAD` is `origin/main` after a fetch, records that commit, runs `gates`, builds every lane from that commit as a dry run, and checks `origin/main` has not moved before it would publish. Publishing is not wired in yet, so it releases nothing.
+- `ship ci`: for CI runners. It refuses unless the checkout is clean and `HEAD` is `origin/main` after a fetch, records that commit, runs `gates`, builds every lane from that commit as a dry run (the mac lane prints its plan), and checks `origin/main` has not moved before it would publish. Publishing is not wired in yet, so it releases nothing.
 - `ship status`: the latest TestFlight build and its beta review state, App Store version states, and Play internal and production versions.
 - `ship doctor`: tools (`xcodebuild`, `xcodegen` or `pod`, `bun`, `java` for Android), credentials, the key file, the App Store Connect app, each external group, the Play key, and for Expo apps a warning when `ios/.xcode.env.local` points `NODE_BINARY` at a node that no longer exists.
 

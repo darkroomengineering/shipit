@@ -80,7 +80,10 @@ describe("parseConfig rejects", () => {
 
   test("a missing or malformed version", () => {
     rejects({ ...minimal, version: undefined }, "version: expected an object");
-    rejects({ ...minimal, version: { file: "a.json", json: "v", yaml: "v" } }, "set json or yaml, not both");
+    rejects(
+      { ...minimal, version: { file: "a.json", json: "v", yaml: "v" } },
+      "version.: set one of json, yaml or regex",
+    );
   });
 
   test("wrong types and values", () => {
