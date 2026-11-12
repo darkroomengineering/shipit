@@ -19,7 +19,7 @@ decisions (below)              ┘                                              
 - Standalone repo `~/Developer/shipit`, `ship` on PATH via `bun link`. Each app has a `ship.json`.
 - iOS and Android (Android is nocam only today).
 - Nightly App Store submission is opt-in per app (`"nightly": true`); nocam on, the rest off.
-- Version moves automatically: once App Review approves a version, the next `ship beta` bumps the patch and pushes `chore: start version X` to main. `ship version minor|major` for bigger jumps.
+- Version moves automatically: once App Review approves a version, the next `ship beta` opens a `chore: start version X` pull request that bumps the patch, and builds the new version. `ship version minor|major` for bigger jumps.
 - MineCompa's EAS workflow is removed. chess-trainer leaves Xcode Cloud (the user disables the workflow in App Store Connect).
 
 ## Shape
@@ -58,6 +58,6 @@ Builds always come from a clean worktree of `origin/main`. Uncommitted work neve
 ## Risks
 
 - Expo archive is the fragile part (Apple tar, `._*`, Hermes dSYM, Xcode 27 patches). Port minecompanion's script verbatim; prove it with a dry run before deleting anything.
-- Auto version bump pushes to main unattended. It only fires after an approval, same as nocam today.
+- The auto version bump never pushes to main: it opens a pull request after an approval, and `ship release` waits until someone merges it.
 - Two launchd agents (nocam nightly, antocam keep-alive) are replaced by one; install it only after nocam's branch is merged, or nocam's night run breaks.
 - Real uploads are run by the user (`! ship beta`); agent runs stop at dry runs.

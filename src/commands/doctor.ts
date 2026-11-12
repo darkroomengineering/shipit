@@ -46,6 +46,7 @@ async function checkIos(config: ShipConfig) {
   const ios = config.ios;
   if (!ios) return;
   tool("xcodebuild");
+  tool("gh", "warn");
   tool(ios.kind === "xcodegen" ? "xcodegen" : "pod");
   if (ios.kind === "expo") tool("python3");
   checkNodeBinary(config);
