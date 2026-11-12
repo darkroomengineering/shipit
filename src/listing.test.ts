@@ -326,7 +326,23 @@ class FakeAsc extends Asc {
 
 const page = (data: Resource[]) => ({ data });
 
-function routes(state = "PREPARE_FOR_SUBMISSION") {
+interface Store {
+  state?: string;
+  /** assetDeliveryState.state App Store Connect reports for each new upload. */
+  delivery?: string;
+  versionLocale?: string;
+  infoLocale?: string;
+  /** No App Store version for 1.2.0 yet. */
+  noVersion?: boolean;
+}
+
+function routes({
+  state = "PREPARE_FOR_SUBMISSION",
+  delivery = "COMPLETE",
+  versionLocale = "en-US",
+  infoLocale = "en-US",
+  noVersion = false,
+}: Store = {}) {
   let uploads = 0;
   return (method: string, path: string): unknown => {
     if (method === "POST" && path === "/appScreenshots") {
@@ -349,6 +365,19 @@ function routes(state = "PREPARE_FOR_SUBMISSION") {
       };
     }
     if (method !== "GET") return null;
+    if (path.startsWith("/appScreenshots/shot"))
+      return {
+        data: {
+          id: path.split(/[/?]/)[2],
+          attributes: {
+            assetDeliveryState: {
+              state: delivery,
+              errors: delivery === "FAILED" ? [{ code: "IMAGE_TOOL_FAILURE", description: "Bad image" }] : [],
+            },
+          },
+        },
+      };
+    if (path.startsWith("/apps/app1/appStoreVersions") && noVersion) return page([]);
     if (path.startsWith("/apps/app1/appStoreVersions"))
       return page([
         {
@@ -357,14 +386,18 @@ function routes(state = "PREPARE_FOR_SUBMISSION") {
         },
       ]);
     if (path === "/appStoreVersions/v1/appStoreVersionLocalizations")
-      return page([{ id: "vl1", attributes: { locale: "en-US", description: "Old.", keywords: "tide,surf,beach" } }]);
+      return page([
+        { id: "vl1", attributes: { locale: versionLocale, description: "Old.", keywords: "tide,surf,beach" } },
+      ]);
     if (path === "/apps/app1/appInfos")
       return page([
         { id: "live", attributes: { state: "READY_FOR_DISTRIBUTION" } },
         { id: "next", attributes: { state: "PREPARE_FOR_SUBMISSION" } },
       ]);
     if (path === "/appInfos/next/appInfoLocalizations")
-      return page([{ id: "il1", attributes: { locale: "en-US", name: "Old name", subtitle: "Tides for your beach" } }]);
+      return page([
+        { id: "il1", attributes: { locale: infoLocale, name: "Old name", subtitle: "Tides for your beach" } },
+      ]);
     if (path === "/appStoreVersionLocalizations/vl1/appScreenshotSets")
       return page([{ id: "set1", attributes: { screenshotDisplayType: "APP_IPHONE_67" } }]);
     if (path === "/appScreenshotSets/set1/appScreenshots")
@@ -373,7 +406,7 @@ function routes(state = "PREPARE_FOR_SUBMISSION") {
   };
 }
 
-const appStore = (state?: string) => new FakeAsc(routes(state));
+const appStore = (store?: Store) => new FakeAsc(routes(store));
 
 describe("pushAppStore", () => {
   const stubFetch = () =>
@@ -451,7 +484,7 @@ describe("pushAppStore", () => {
 
   test("a version in review or live is refused before any write", async () => {
     for (const state of ["WAITING_FOR_REVIEW", "READY_FOR_SALE"]) {
-      const asc = appStore(state);
+      const asc = appStore({ state });
       await expect(push(asc, false)).rejects.toThrow(`1.2.0 is ${state}`);
       expect(asc.calls.filter((call) => call.method !== "GET")).toEqual([]);
     }
@@ -462,7 +495,9 @@ describe("pushAppStore", () => {
     const checksum = new Bun.CryptoHasher("md5").update(same.bytes).digest("hex");
     const asc = new FakeAsc((method, path) => {
       if (path === "/appScreenshotSets/set1/appScreenshots")
-        return page([{ id: "s1", attributes: { sourceFileChecksum: checksum } }]);
+        return page([
+          { id: "s1", attributes: { sourceFileChecksum: checksum, assetDeliveryState: { state: "COMPLETE" } } },
+        ]);
       if (path === "/appStoreVersionLocalizations/vl1/appScreenshotSets")
         return page([{ id: "set1", attributes: { screenshotDisplayType: "APP_IPHONE_67" } }]);
       return routes()(method, path);
@@ -477,6 +512,59 @@ describe("pushAppStore", () => {
       dry: false,
     });
     expect(asc.calls.filter((call) => call.method !== "GET")).toEqual([]);
+  });
+
+  test("a matching screenshot that did not finish processing is replaced", async () => {
+    const same = shot("1.png");
+    const checksum = new Bun.CryptoHasher("md5").update(same.bytes).digest("hex");
+    for (const state of ["FAILED", "UPLOAD_COMPLETE", undefined]) {
+      const asc = new FakeAsc((method, path) => {
+        if (path === "/appScreenshotSets/set1/appScreenshots")
+          return page([
+            { id: "s1", attributes: { sourceFileChecksum: checksum, ...(state && { assetDeliveryState: { state } }) } },
+          ]);
+        return routes()(method, path);
+      });
+      await pushAppStore(asc, {
+        appId: "app1",
+        version: "1.2.0",
+        text: {},
+        copyright: "© 2025 Darkroom Engineering LLC",
+        sets: new Map([["APP_IPHONE_67", [same]]]),
+        privacy: null,
+        dry: false,
+      });
+      expect(asc.calls.filter((call) => call.method !== "GET").map((call) => `${call.method} ${call.path}`)).toEqual([
+        "DELETE /appScreenshots/s1",
+        "POST /appScreenshots",
+        "PATCH /appScreenshots/shot1",
+      ]);
+    }
+  });
+
+  test("waits for each upload to finish processing, and fails when App Store Connect cannot process one", async () => {
+    const done = appStore();
+    await push(done, false);
+    expect(done.calls.filter((call) => call.path.includes("fields[appScreenshots]=assetDeliveryState"))).toHaveLength(
+      2,
+    );
+
+    const failed = appStore({ delivery: "FAILED" });
+    await expect(push(failed, false)).rejects.toThrow(
+      "App Store Connect could not process screenshot 1.png: Bad image",
+    );
+  });
+
+  test("an app without en-US fails before any write, instead of overwriting another language", async () => {
+    for (const store of [
+      { versionLocale: "es-ES" },
+      { infoLocale: "es-ES" },
+      { infoLocale: "es-ES", noVersion: true },
+    ]) {
+      const asc = appStore(store);
+      await expect(push(asc, false)).rejects.toThrow("has no en-US localization (it has es-ES)");
+      expect(asc.calls.filter((call) => call.method !== "GET")).toEqual([]);
+    }
   });
 });
 

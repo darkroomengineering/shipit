@@ -476,8 +476,18 @@ function changes(resource: Resource | undefined, want: Record<string, string | u
   return changed;
 }
 
-const localizationOf = (localizations: Resource[]) =>
-  localizations.find((localization) => attr(localization, "locale") === LOCALE) ?? localizations[0];
+/**
+ * The en-US localization. The listing is English, so an app without en-US fails rather than having another
+ * language overwritten; adding the localization is left to a person in App Store Connect.
+ */
+function englishOf(localizations: Resource[], what: string): Resource {
+  const english = localizations.find((localization) => attr(localization, "locale") === LOCALE);
+  if (!english)
+    throw new Error(
+      `${what} has no ${LOCALE} localization (it has ${localizations.map((l) => attr(l, "locale")).join(", ") || "none"}); add ${LOCALE} in App Store Connect first`,
+    );
+  return english;
+}
 
 interface UploadOperation {
   method: string;
@@ -489,7 +499,48 @@ interface UploadOperation {
 
 const md5 = (bytes: Uint8Array) => createHash("md5").update(bytes).digest("hex");
 
-async function uploadScreenshot(asc: Asc, setId: string, shot: Screenshot) {
+/** Apple's processing state of an uploaded asset: AWAITING_UPLOAD, UPLOAD_COMPLETE, COMPLETE or FAILED. */
+function deliveryOf(resource: Resource | undefined): { state?: string; errors: string[] } {
+  const delivery = resource?.attributes?.assetDeliveryState;
+  if (typeof delivery !== "object" || delivery === null) return { errors: [] };
+  const { state, errors } = delivery as { state?: unknown; errors?: unknown };
+  const messages = Array.isArray(errors)
+    ? errors.map((error) =>
+        typeof error === "object" && error !== null && "description" in error
+          ? String(error.description)
+          : JSON.stringify(error),
+      )
+    : [];
+  return { state: typeof state === "string" ? state : undefined, errors: messages };
+}
+
+export const SCREENSHOT_PROCESSING = { timeout: 2 * 60_000, interval: 5_000 };
+
+/**
+ * Waits until App Store Connect finishes processing an uploaded screenshot, as Apple's upload flow requires
+ * (https://developer.apple.com/documentation/appstoreconnectapi/uploading-assets-to-app-store-connect).
+ */
+async function processed(asc: Asc, id: string, name: string) {
+  const deadline = Date.now() + SCREENSHOT_PROCESSING.timeout;
+  for (;;) {
+    const { data } = await asc.api<{ data: Resource }>(
+      `/appScreenshots/${id}?fields[appScreenshots]=assetDeliveryState`,
+    );
+    const { state, errors } = deliveryOf(data);
+    if (state === "COMPLETE") return;
+    if (state === "FAILED")
+      throw new Error(
+        `App Store Connect could not process screenshot ${name}: ${errors.join("; ") || "no reason given"}`,
+      );
+    if (Date.now() >= deadline)
+      throw new Error(
+        `screenshot ${name} is still ${state ?? "processing"} after ${SCREENSHOT_PROCESSING.timeout / 1000} seconds; the next run replaces it`,
+      );
+    await Bun.sleep(SCREENSHOT_PROCESSING.interval);
+  }
+}
+
+async function uploadScreenshot(asc: Asc, setId: string, shot: Screenshot): Promise<string> {
   const reserved = (await asc.post("/appScreenshots", {
     data: {
       type: "appScreenshots",
@@ -514,11 +565,12 @@ async function uploadScreenshot(asc: Asc, setId: string, shot: Screenshot) {
       attributes: { uploaded: true, sourceFileChecksum: md5(shot.bytes) },
     },
   });
+  return reserved.data.id;
 }
 
 /**
- * Replaces each screenshot set the listing has shots for. A set whose screenshots already match, file for file, is
- * left alone; sets the listing has no shots for are never touched.
+ * Replaces each screenshot set the listing has shots for. A set whose screenshots already match, file for file, and
+ * have all finished processing is left alone; sets the listing has no shots for are never touched.
  */
 async function pushScreenshots(
   asc: Asc,
@@ -534,7 +586,11 @@ async function pushScreenshots(
     const current = set ? await asc.list(`/appScreenshotSets/${set.id}/appScreenshots`) : [];
     if (
       current.length === shots.length &&
-      current.every((old, i) => attr(old, "sourceFileChecksum") === md5(shots[i]?.bytes ?? new Uint8Array()))
+      current.every(
+        (old, i) =>
+          deliveryOf(old).state === "COMPLETE" &&
+          attr(old, "sourceFileChecksum") === md5(shots[i]?.bytes ?? new Uint8Array()),
+      )
     ) {
       say(`${type}: ${shots.length} screenshots (unchanged)`);
       continue;
@@ -554,7 +610,9 @@ async function pushScreenshots(
         })) as { data: Resource }
       ).data;
       for (const old of current) await asc.api(`/appScreenshots/${old.id}`, { method: "DELETE" });
-      for (const shot of shots) await uploadScreenshot(asc, set.id, shot);
+      const uploaded: [string, string][] = [];
+      for (const shot of shots) uploaded.push([await uploadScreenshot(asc, set.id, shot), shot.name]);
+      for (const [id, name] of uploaded) await processed(asc, id, name);
     });
   }
 }
@@ -583,6 +641,14 @@ export async function pushAppStore(asc: Asc, push: AppStorePush) {
     throw new Error(
       `${version} is ${state}; App Store Connect takes listing changes only on a version being prepared (ship beta starts the next one)`,
     );
+  // Checked before any write, on whichever app info exists now: a new version gets the app's languages.
+  const before = await asc.list(`/apps/${appId}/appInfos`);
+  const editableInfo = (infos: Resource[]) =>
+    infos.find((candidate) => EDITABLE.has(attr(candidate, "state") ?? attr(candidate, "appStoreState") ?? ""));
+  const checked = editableInfo(before) ?? before[0];
+  if (!checked) throw new Error("the app has no app info");
+  englishOf(await asc.list(`/appInfos/${checked.id}/appInfoLocalizations`), "the app");
+
   let target = found;
   if (!target) {
     say(`${version} has no App Store version yet`);
@@ -602,22 +668,20 @@ export async function pushAppStore(asc: Asc, push: AppStorePush) {
     );
   }
   const versionLocalization = target
-    ? localizationOf(await asc.list(`/appStoreVersions/${target.id}/appStoreVersionLocalizations`))
+    ? englishOf(
+        await asc.list(`/appStoreVersions/${target.id}/appStoreVersionLocalizations`),
+        `App Store version ${version}`,
+      )
     : undefined;
-  if (target && !versionLocalization) throw new Error(`App Store version ${version} has no localization`);
   // Name, subtitle and privacy policy live on the app info, which App Store Connect opens with the new version.
-  const infos = await asc.list(`/apps/${appId}/appInfos`);
-  const info = infos.find((candidate) =>
-    EDITABLE.has(attr(candidate, "state") ?? attr(candidate, "appStoreState") ?? ""),
-  );
+  const info = editableInfo(found ? before : await asc.list(`/apps/${appId}/appInfos`));
   if (!info && target)
     throw new Error("the app has no app info being prepared, so its name and subtitle cannot change");
   const infoLocalization = info
-    ? localizationOf(await asc.list(`/appInfos/${info.id}/appInfoLocalizations`))
+    ? englishOf(await asc.list(`/appInfos/${info.id}/appInfoLocalizations`), "the app info")
     : undefined;
-  if (info && !infoLocalization) throw new Error("the app info has no localization");
 
-  say(`listing for ${version} (${state ?? "new version"}), ${attr(versionLocalization, "locale") ?? LOCALE}`);
+  say(`listing for ${version} (${state ?? "new version"}), ${LOCALE}`);
   const infoChanges = changes(
     infoLocalization,
     { name: text.name, subtitle: text.subtitle, privacyPolicyUrl: text.privacyPolicyUrl },
