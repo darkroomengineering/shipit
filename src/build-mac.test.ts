@@ -107,6 +107,11 @@ describe("the dry-run plan for Programa", () => {
       `${sign} --entitlements ${worktree}/programa.entitlements ${app}`,
       `codesign --verify --deep --strict --verbose=2 ${app}`,
       `codesign -d --entitlements :- ${app}`,
+      `codesign -d --entitlements :- ${app}/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc`,
+      `codesign -d --entitlements :- ${app}/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc`,
+      `codesign -d --entitlements :- ${app}/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate`,
+      `codesign -d --entitlements :- ${app}/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app`,
+      `codesign -d --entitlements :- ${app}/Contents/Frameworks/Sparkle.framework`,
       `codesign -d --entitlements :- ${app}/Contents/PlugIns/ProgramaDockTilePlugin.plugin`,
       `codesign -d --entitlements :- ${app}/Contents/Resources/bin/programa`,
       `codesign -d --entitlements :- ${app}/Contents/Resources/bin/programa-mcp`,
@@ -296,16 +301,22 @@ edSignature: c2ln
     );
   }
 
-  const ship = (skipUpload: boolean) => {
+  const plist = (keys: string[]) =>
+    `<plist><dict>${keys.map((key) => `<key>${key}</key><true/>`).join("")}</dict></plist>`;
+  const DOWNLOADER = "Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc";
+
+  const ship = (skipUpload: boolean, downloaderEntitlements: string[] = ["com.apple.security.network.client"]) => {
     const { worktree, config } = programa();
     const dir = join(worktree, "build");
     const runner = apple(dir);
-    const entitlements = `<plist><dict>${REQUIRED.map((key) => `<key>${key}</key><true/>`).join("")}</dict></plist>`;
     const capture = runner.capture.bind(runner);
-    runner.capture = async (argv, options) =>
-      argv[0] === "codesign" && argv[1] === "-d" && argv.at(-1) === join(dir, "Programa.app")
-        ? entitlements
-        : capture(argv, options);
+    runner.capture = async (argv, options) => {
+      if (argv[0] !== "codesign" || argv[1] !== "-d") return capture(argv, options);
+      runner.calls.push(argv.join(" "));
+      if (argv.at(-1) === join(dir, "Programa.app")) return plist(REQUIRED);
+      if (argv.at(-1) === join(dir, "Programa.app", DOWNLOADER)) return plist(downloaderEntitlements);
+      return "";
+    };
     const downloaded: string[] = [];
     const result = shipMac({
       config,
@@ -351,6 +362,22 @@ edSignature: c2ln
       `gh release upload rolling ${dir}/alias/programa-macos.dmg ${repo} --clobber`,
     ]);
     expect(runner.calls.some((call) => call.includes("ABCD"))).toBe(true);
+  });
+
+  test("Sparkle's XPC services may keep their own entitlements, app-only ones included", async () => {
+    const { result, runner } = ship(true, ["com.apple.security.network.client", "com.apple.security.cs.allow-jit"]);
+    expect((await result).published).toBe(false);
+    expect(runner.calls.some((call) => call.startsWith("codesign -d") && call.endsWith(DOWNLOADER))).toBe(true);
+    expect(runner.calls.filter((call) => call.startsWith("xcrun notarytool submit"))).toHaveLength(2);
+  });
+
+  test("a Sparkle XPC service with a forbidden entitlement stops before notarization", async () => {
+    const { result, runner } = ship(true, ["com.apple.security.cs.disable-library-validation"]);
+    await expect(result).rejects.toThrow(
+      `${DOWNLOADER} must not carry the entitlement com.apple.security.cs.disable-library-validation`,
+    );
+    expect(runner.calls.some((call) => call.startsWith("codesign -d") && call.endsWith(DOWNLOADER))).toBe(true);
+    expect(runner.calls.some((call) => call.includes("notarytool"))).toBe(false);
   });
 
   test("an app missing a required entitlement stops before notarization", async () => {

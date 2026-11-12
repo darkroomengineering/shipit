@@ -319,6 +319,12 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
   const entitlements = (path: string) => r.capture(["codesign", "-d", "--entitlements", ":-", path]);
   const appEntitlements = await entitlements(app);
   const nestedCode: SignedCode[] = [];
+  // Sparkle's parts keep the entitlements Sparkle ships them with, which may be anything but a forbidden key.
+  for (const part of SPARKLE_PARTS) {
+    if (!dry && !existsSync(join(app, part.path))) continue;
+    const text = await entitlements(join(app, part.path));
+    if (text !== undefined) nestedCode.push({ path: part.path, entitlements: text, ownEntitlements: true });
+  }
   for (const { path, pattern } of nested) {
     const text = await entitlements(join(app, path));
     if (text !== undefined)
