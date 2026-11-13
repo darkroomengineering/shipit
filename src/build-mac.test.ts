@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandRunner, developerIdentity, type Runner, shellLine, shipMac } from "./build-mac.ts";
@@ -294,7 +294,10 @@ edSignature: c2ln
         }
         if (tool === "hdiutil") writeFileSync(argv.at(-1) ?? "", "dmg");
         if (tool?.endsWith("generate_appcast")) {
-          writeFileSync(join(staging, "appcast.xml"), generated);
+          const channel = argv.includes("--channel")
+            ? `<sparkle:channel>${argv[argv.indexOf("--channel") + 1]}</sparkle:channel>`
+            : "";
+          writeFileSync(join(staging, "appcast.xml"), generated.replace("<enclosure", `${channel}<enclosure`));
           writeFileSync(join(staging, DELTA), "delta");
         }
       },
@@ -305,8 +308,17 @@ edSignature: c2ln
     `<plist><dict>${keys.map((key) => `<key>${key}</key><true/>`).join("")}</dict></plist>`;
   const DOWNLOADER = "Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc";
 
-  const ship = (skipUpload: boolean, downloaderEntitlements: string[] = ["com.apple.security.network.client"]) => {
-    const { worktree, config } = programa();
+  const ship = (
+    skipUpload: boolean,
+    downloaderEntitlements: string[] = ["com.apple.security.network.client"],
+    betaChannel = false,
+  ) => {
+    const programaApp = programa();
+    const { worktree } = programaApp;
+    const config =
+      betaChannel && programaApp.config.mac
+        ? { ...programaApp.config, mac: { ...programaApp.config.mac, betaChannel } }
+        : programaApp.config;
     const dir = join(worktree, "build");
     const runner = apple(dir);
     const capture = runner.capture.bind(runner);
@@ -362,6 +374,19 @@ edSignature: c2ln
       `gh release upload rolling ${dir}/alias/programa-macos.dmg ${repo} --clobber`,
     ]);
     expect(runner.calls.some((call) => call.includes("ABCD"))).toBe(true);
+  });
+
+  test("with betaChannel, the build goes to the beta channel and the stable download name stays put", async () => {
+    const { result, runner, dir } = ship(false, undefined, true);
+    expect((await result).published).toBe(true);
+    expect(runner.calls.find((call) => call.includes("generate_appcast"))).toContain(" --channel beta ");
+    const repo = "--repo darkroomengineering/programa";
+    expect(runner.calls.filter((call) => call.startsWith("gh release upload"))).toEqual([
+      `gh release upload rolling ${dir}/updates/programa-macos-${BUILD}.dmg ${dir}/updates/${DELTA} ${repo}`,
+      `gh release upload rolling ${dir}/appcast-${BUILD}.xml ${repo}`,
+      `gh release upload rolling ${dir}/updates/appcast.xml ${repo} --clobber`,
+    ]);
+    expect(existsSync(join(dir, "alias"))).toBe(false);
   });
 
   test("Sparkle's XPC services may keep their own entitlements, app-only ones included", async () => {
