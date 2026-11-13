@@ -49,6 +49,12 @@ describe("the mac lane config", () => {
     expect(config.mac?.dmg).toBe("Demo-mac.dmg");
     expect(config.mac?.architectures).toEqual(["arm64"]);
     expect(config.buildNumber).toBe("time");
+    expect(config.mac?.betaChannel).toBe(false);
+  });
+
+  test("betaChannel opts the app into Sparkle's beta channel", () => {
+    expect(parse({ ...base, mac: { ...mac, betaChannel: true } }).mac?.betaChannel).toBe(true);
+    rejects({ mac: { ...mac, betaChannel: "yes" } }, "mac.betaChannel: expected true or false");
   });
 
   test("r2 hosting with a per-app stable name, as browsee publishes Browsee.dmg", () => {

@@ -8,8 +8,10 @@ import {
   changelogSection,
   enclosureName,
   entitlementProblems,
+  NothingToPromoteError,
   newestArchives,
   preflightProblems,
+  promoteAppcast,
   publicKeyFromPrivate,
   publishedBuild,
 } from "./sparkle.ts";
@@ -55,6 +57,7 @@ describe("appcast reading", () => {
       shortVersion: "0.7.0",
       url: `${PREFIX}programa-macos-41883068665001001.dmg`,
       edSignature: "c2ln",
+      channel: undefined,
     });
     expect(publishedBuild(xml)).toBe("42875290831001002");
     expect(newestArchives(xml, 2)).toEqual([
@@ -163,6 +166,85 @@ describe("appcastProblems", () => {
       "the app requires a signed feed and the appcast carries no feed signature",
     ]);
     expect(appcastProblems(appcast("5"), { ...expected, signedFeed: false })).toEqual([]);
+  });
+});
+
+describe("appcastProblems with a beta channel", () => {
+  const expected = { build: "5", version: "0.7.0", url: `${PREFIX}programa-macos-5.dmg`, signedFeed: false };
+  const beta = appcast("5").replace("<sparkle:version>5", "<sparkle:channel>beta</sparkle:channel><sparkle:version>5");
+
+  test("checks the new item's channel only when one is expected", () => {
+    expect(appcastItems(beta)[0]?.channel).toBe("beta");
+    expect(appcastProblems(beta, { ...expected, channel: "beta" })).toEqual([]);
+    expect(appcastProblems(appcast("5"), { ...expected, channel: "beta" })).toEqual([
+      "the item for build 5 is on the default channel, not beta",
+    ]);
+    expect(appcastProblems(beta, expected)).toEqual([]);
+  });
+});
+
+describe("promoteAppcast", () => {
+  /** generate_appcast's layout: one element per indented line, release notes embedded as CDATA. */
+  const entry = (build: string, channel?: string) => `
+        <item>
+            <title>0.7.${build}</title>
+            <pubDate>Thu, 12 Nov 2026 10:00:00 +0000</pubDate>
+            <sparkle:version>${build}</sparkle:version>
+            <sparkle:shortVersionString>0.7.${build}</sparkle:shortVersionString>
+            <description><![CDATA[<p>Costs $& less, $1 off.</p>]]></description>${channel ? `\n            <sparkle:channel>${channel}</sparkle:channel>` : ""}
+            <enclosure url="${PREFIX}programa-macos-${build}.dmg" length="1" type="application/octet-stream" sparkle:edSignature="c2ln"/>
+        </item>`;
+  const feed = (...entries: string[]) =>
+    `<?xml version="1.0" standalone="yes"?>\n<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">\n    <channel>\n        <title>Programa</title>${entries.join("")}\n    </channel>\n</rss>\n`;
+  const xml = feed(entry("7", "beta"), entry("6", "beta"), entry("5"));
+
+  test("promotes the newest beta and changes nothing else", () => {
+    const result = promoteAppcast(xml);
+    expect(result.item).toMatchObject({ version: "7", shortVersion: "0.7.7", channel: undefined });
+    expect(result.xml).toBe(feed(entry("7"), entry("6", "beta"), entry("5")));
+    expect(appcastItems(result.xml).map((item) => item.channel)).toEqual([undefined, "beta", undefined]);
+  });
+
+  test("promotes a named build", () => {
+    const result = promoteAppcast(xml, "6");
+    expect(result.item.version).toBe("6");
+    expect(result.xml).toBe(feed(entry("7", "beta"), entry("6"), entry("5")));
+  });
+
+  test("an element sharing its line with others is removed alone", () => {
+    const inline = appcast("5", "6").replace(
+      "<sparkle:version>6",
+      "<sparkle:channel>beta</sparkle:channel><sparkle:version>6",
+    );
+    expect(promoteAppcast(inline).xml).toBe(appcast("5", "6"));
+  });
+
+  test("refuses a feed with no beta build, or a build that is not on the beta channel", () => {
+    expect(() => promoteAppcast(feed(entry("5")))).toThrow(NothingToPromoteError);
+    expect(() => promoteAppcast(feed(entry("5")))).toThrow("the appcast has no beta build to promote");
+    expect(() => promoteAppcast(xml, "5")).toThrow("build 5 is on the default channel, not beta");
+    expect(() => promoteAppcast(xml, "9")).toThrow("the appcast has no item for build 9");
+  });
+
+  test("refuses a beta that is not newer than every default-channel build", () => {
+    const older = feed(entry("8"), entry("7", "beta"), entry("5"));
+    expect(() => promoteAppcast(older)).toThrow(NothingToPromoteError);
+    expect(() => promoteAppcast(older)).toThrow("nothing newer than the default channel to promote");
+    expect(() => promoteAppcast(feed(entry("8", "beta"), entry("8")), "8")).toThrow("not newer than 8");
+  });
+
+  test("compares builds as BigInt past Number's safe range", () => {
+    const big = feed(entry("42875290831001003", "beta"), entry("42875290831001002"));
+    expect(promoteAppcast(big).item.version).toBe("42875290831001003");
+    expect(() => promoteAppcast(feed(entry("42875290831001002", "beta"), entry("42875290831001003")))).toThrow(
+      NothingToPromoteError,
+    );
+  });
+
+  test("refuses a signed feed, because the edit would invalidate its signature", () => {
+    const signed = `${xml}<!-- sparkle-signatures:\nedSignature: x\n-->\n`;
+    expect(() => promoteAppcast(signed)).toThrow("signed feeds can't be promoted yet");
+    expect(() => promoteAppcast(signed)).not.toThrow(NothingToPromoteError);
   });
 });
 

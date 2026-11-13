@@ -7,26 +7,41 @@ export interface AppcastItem {
   shortVersion: string | undefined;
   url: string | undefined;
   edSignature: string | undefined;
+  /** sparkle:channel; undefined for the default channel every installed copy reads. */
+  channel: string | undefined;
 }
 
 const tag = (block: string, name: string) =>
   block.match(new RegExp(`<sparkle:${name}>\\s*([^<]*?)\\s*</sparkle:${name}>`))?.[1];
 const attribute = (element: string, name: string) => element.match(new RegExp(`\\s${name}="([^"]*)"`))?.[1];
 
-/** The items of an appcast, in document order. Reads both `<sparkle:version>` and the older enclosure attribute. */
-export function appcastItems(xml: string): AppcastItem[] {
-  return [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/g)].map(([, block = ""]) => {
+/** Each item with where its inner text starts in the appcast, so an edit can splice the original bytes. */
+function itemBlocks(xml: string): { item: AppcastItem; block: string; start: number }[] {
+  return [...xml.matchAll(/(<item\b[^>]*>)([\s\S]*?)<\/item>/g)].map((match) => {
+    const [, open = "", block = ""] = match;
     const enclosure = block.match(/<enclosure\b[^>]*>/)?.[0] ?? "";
     return {
-      version: tag(block, "version") ?? attribute(enclosure, "sparkle:version") ?? "",
-      shortVersion: tag(block, "shortVersionString") ?? attribute(enclosure, "sparkle:shortVersionString"),
-      url: attribute(enclosure, "url"),
-      edSignature: attribute(enclosure, "sparkle:edSignature"),
+      block,
+      start: match.index + open.length,
+      item: {
+        version: tag(block, "version") ?? attribute(enclosure, "sparkle:version") ?? "",
+        shortVersion: tag(block, "shortVersionString") ?? attribute(enclosure, "sparkle:shortVersionString"),
+        url: attribute(enclosure, "url"),
+        edSignature: attribute(enclosure, "sparkle:edSignature"),
+        channel: tag(block, "channel"),
+      },
     };
   });
 }
 
+/** The items of an appcast, in document order. Reads both `<sparkle:version>` and the older enclosure attribute. */
+export const appcastItems = (xml: string): AppcastItem[] => itemBlocks(xml).map(({ item }) => item);
+
 const DIGITS = /^\d+$/;
+
+/** Newest build first. Compares as BigInt; see publishedBuild. */
+const byBuild = (a: AppcastItem, b: AppcastItem) =>
+  BigInt(b.version) > BigInt(a.version) ? 1 : BigInt(b.version) < BigInt(a.version) ? -1 : 0;
 
 /**
  * The highest build in a published appcast. Compared as BigInt: Programa's run-derived builds have 17 digits, past
@@ -46,7 +61,7 @@ export function publishedBuild(xml: string): string | undefined {
 export function newestArchives(xml: string, count: number): string[] {
   return appcastItems(xml)
     .filter((item) => DIGITS.test(item.version) && item.url)
-    .sort((a, b) => (BigInt(b.version) > BigInt(a.version) ? 1 : BigInt(b.version) < BigInt(a.version) ? -1 : 0))
+    .sort(byBuild)
     .slice(0, count)
     .map((item) => item.url as string);
 }
@@ -126,7 +141,7 @@ export const keyProblem = (signingKey: string, publicKey: string) =>
 /** Every reason a freshly generated appcast must not be published; empty when it may. */
 export function appcastProblems(
   xml: string,
-  expected: { build: string; version: string; url: string; signedFeed: boolean },
+  expected: { build: string; version: string; url: string; signedFeed: boolean; channel?: string },
 ): string[] {
   const item = appcastItems(xml).find((candidate) => candidate.version === expected.build);
   if (!item) return [`the appcast has no item for build ${expected.build}`];
@@ -136,10 +151,59 @@ export function appcastProblems(
   if (item.url !== expected.url)
     problems.push(`the item for build ${expected.build} downloads ${item.url}, not ${expected.url}`);
   if (!item.edSignature) problems.push(`the item for build ${expected.build} has no sparkle:edSignature`);
+  if (expected.channel !== undefined && item.channel !== expected.channel)
+    problems.push(
+      `the item for build ${expected.build} is on the ${item.channel ?? "default"} channel, not ${expected.channel}`,
+    );
   // generate_appcast signs the whole feed when the app sets SURequireSignedFeed; such an app rejects an unsigned one.
   if (expected.signedFeed && !xml.includes("<!-- sparkle-signatures:"))
     problems.push("the app requires a signed feed and the appcast carries no feed signature");
   return problems;
+}
+
+/** Promote refused because the feed has no beta build newer than what everyone already gets. */
+export class NothingToPromoteError extends Error {}
+
+/**
+ * Moves a beta build to the default channel: removes that item's `<sparkle:channel>` and leaves every other byte
+ * as it was. Takes the given build, or the newest beta. The item's archive signature covers only the archive, so it
+ * stays valid; a feed signature covers the whole file, so a signed feed is refused.
+ */
+export function promoteAppcast(xml: string, build?: string): { xml: string; item: AppcastItem } {
+  if (xml.includes("<!-- sparkle-signatures:"))
+    throw new Error(
+      "the appcast carries a feed signature (SURequireSignedFeed), and promoting edits the feed, which would invalidate it; signed feeds can't be promoted yet",
+    );
+  const blocks = itemBlocks(xml).filter(({ item }) => DIGITS.test(item.version));
+  const chosen =
+    build === undefined
+      ? blocks.filter(({ item }) => item.channel === "beta").sort((a, b) => byBuild(a.item, b.item))[0]
+      : blocks.find(({ item }) => item.version === build);
+  if (!chosen)
+    throw build === undefined
+      ? new NothingToPromoteError("the appcast has no beta build to promote")
+      : new Error(`the appcast has no item for build ${build}`);
+  if (chosen.item.channel !== "beta")
+    throw new Error(
+      `build ${chosen.item.version} is on the ${chosen.item.channel ?? "default"} channel, not beta; there is nothing to promote`,
+    );
+  const newest = blocks
+    .filter(({ item }) => item.channel === undefined)
+    .sort((a, b) => byBuild(a.item, b.item))[0]?.item;
+  if (newest && BigInt(chosen.item.version) <= BigInt(newest.version))
+    throw new NothingToPromoteError(
+      `build ${chosen.item.version} is not newer than ${newest.version} on the default channel; nothing newer than the default channel to promote`,
+    );
+  // The element alone on its line goes with its line; otherwise only the element goes.
+  const element =
+    chosen.block.match(/^[ \t]*<sparkle:channel>[^<]*<\/sparkle:channel>[ \t]*\r?\n/m) ??
+    chosen.block.match(/<sparkle:channel>[^<]*<\/sparkle:channel>/);
+  if (!element || element.index === undefined) throw new Error(`build ${chosen.item.version} has no sparkle:channel`);
+  const from = chosen.start + element.index;
+  return {
+    xml: xml.slice(0, from) + xml.slice(from + element[0].length),
+    item: { ...chosen.item, channel: undefined },
+  };
 }
 
 /** Whether an entitlements plist (`codesign -d --entitlements :-`) grants a key. */

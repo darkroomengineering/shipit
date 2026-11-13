@@ -21,7 +21,16 @@ export interface Publication {
   history: string;
   /** The new appcast, named `appcast.xml`. */
   appcast: string;
-  /** The newest DMG under the stable download name. */
+  /** The newest DMG under the stable download name; left out when the build goes to the beta channel. */
+  alias?: string;
+}
+
+/**
+ * What `ship promote` replaces: the appcast with the build moved to the default channel, and that build's DMG under
+ * the stable download name.
+ */
+export interface Promotion {
+  appcast: string;
   alias: string;
 }
 
@@ -34,6 +43,8 @@ export interface MacHost {
   readonly downloadPrefix: string;
   checks(): HostCheck[];
   uploads(files: Publication): Command[];
+  /** The stable download first, the feed last: a failed upload leaves the build on beta, so promote can retry. */
+  promoteUploads(files: Promotion): Command[];
 }
 
 /** Archives on one GitHub release, served at github.com/<repo>/releases/download/<tag>/. */
@@ -65,8 +76,9 @@ export function githubHost(hosting: GithubHosting, feedUrl: string): MacHost {
       upload(files.archives, false),
       upload([files.history], false),
       upload([files.appcast], true),
-      upload([files.alias], true),
+      ...(files.alias ? [upload([files.alias], true)] : []),
     ],
+    promoteUploads: (files) => [upload([files.alias], true), upload([files.appcast], true)],
   };
 }
 
@@ -90,6 +102,8 @@ export function r2Host(hosting: R2Hosting, feedUrl: string, env: NodeJS.ProcessE
       type,
       ...(cache ? ["--cache-control", cache] : []),
     );
+  const appcast = (file: string) => put(file, "appcast.xml", "application/xml", "no-cache");
+  const alias = (file: string) => put(file, basename(file), "application/x-apple-diskimage", "public, max-age=300");
   return {
     downloadPrefix: feedUrl.slice(0, feedUrl.length - "appcast.xml".length),
     checks: () => [{ ...aws("s3api", "head-bucket", "--bucket", hosting.bucket), problem: () => undefined }],
@@ -98,9 +112,10 @@ export function r2Host(hosting: R2Hosting, feedUrl: string, env: NodeJS.ProcessE
         put(file, basename(file), file.endsWith(".dmg") ? "application/x-apple-diskimage" : "application/octet-stream"),
       ),
       put(files.history, `appcasts/appcast-${files.build}.xml`, "application/xml"),
-      put(files.appcast, "appcast.xml", "application/xml", "no-cache"),
-      put(files.alias, basename(files.alias), "application/x-apple-diskimage", "public, max-age=300"),
+      appcast(files.appcast),
+      ...(files.alias ? [alias(files.alias)] : []),
     ],
+    promoteUploads: (files) => [alias(files.alias), appcast(files.appcast)],
   };
 }
 

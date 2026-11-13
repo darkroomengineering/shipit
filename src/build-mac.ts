@@ -118,18 +118,19 @@ export interface MacBuild {
 }
 
 export interface MacResult {
-  /** The archives, appcast and alias were uploaded. */
+  /** The archives and appcast were uploaded, and the alias unless the build went to the beta channel. */
   published: boolean;
 }
 
-async function fetchText(url: string): Promise<string | undefined> {
+/** Reads a URL; undefined when it is not there (404). */
+export async function fetchText(url: string): Promise<string | undefined> {
   const response = await fetch(url, { redirect: "follow" });
   if (response.status === 404) return undefined;
   if (!response.ok) throw new Error(`GET ${url}: ${response.status} ${response.statusText}`);
   return response.text();
 }
 
-async function download(url: string, file: string) {
+export async function download(url: string, file: string) {
   const response = await fetch(url, { redirect: "follow" });
   if (!response.ok) throw new Error(`GET ${url}: ${response.status} ${response.statusText}`);
   await Bun.write(file, response);
@@ -266,6 +267,7 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
         : join(derived, "SourcePackages", "artifacts", "sparkle", "Sparkle", "bin"));
   const sparkleTool = (name: string) => join(sparkleBin ?? "<SPARKLE_BIN>", name);
   const ciKey = env.SPARKLE_PRIVATE_KEY;
+  const channel = mac.betaChannel ? "beta" : undefined;
 
   // 1. Preflight. The commit is main's head in a clean worktree (see runBeta), so tree and branch need no check here.
   say(`== preflight ${version} (${build})`);
@@ -364,6 +366,12 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
     const values = JSON.parse(info) as Record<string, unknown>;
     executable = String(values.CFBundleExecutable ?? executable);
     signedFeed = values.SURequireSignedFeed === true;
+    // promote edits the appcast after publish, which would break a signed feed and strand the beta
+    stop(
+      mac.betaChannel && signedFeed
+        ? [`${mac.app} requires a signed feed, which ship promote can't edit yet; turn off mac.betaChannel`]
+        : [],
+    );
     const expected: Record<string, string> = {
       CFBundleIdentifier: mac.bundleId,
       CFBundleShortVersionString: version,
@@ -459,7 +467,7 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
 
   // 7. The appcast extends the published one. generate_appcast makes deltas from the previous archives, embeds the
   // CHANGELOG section, signs the archive and, when the app requires it, the whole feed. Nothing may edit it after.
-  say("== appcast");
+  say(channel ? `== appcast (${channel} channel)` : "== appcast");
   const fetched = new Set<string>();
   if (published !== undefined) {
     r.note(`write the published appcast to ${join(staging, "appcast.xml")}`);
@@ -493,6 +501,7 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
       host.downloadPrefix,
       "--maximum-deltas",
       String(mac.deltas),
+      ...(channel ? ["--channel", channel] : []),
       "--embed-release-notes",
       staging,
     ]);
@@ -507,6 +516,7 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
         version,
         url: `${host.downloadPrefix}${enclosure}`,
         signedFeed,
+        channel,
       }),
     );
   }
@@ -517,11 +527,14 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
     mkdirSync(history, { recursive: true });
     cpSync(appcast, join(history, `appcast-${build}.xml`));
   }
-  const alias = join(dir, "alias", mac.dmg);
-  r.note(`copy ${dmg} to ${alias}`);
-  if (!dry) {
-    mkdirSync(join(dir, "alias"), { recursive: true });
-    cpSync(dmg, alias);
+  // A beta build leaves the stable download name on the build everyone gets; `ship promote` moves it.
+  const alias = channel ? undefined : join(dir, "alias", mac.dmg);
+  if (alias) {
+    r.note(`copy ${dmg} to ${alias}`);
+    if (!dry) {
+      mkdirSync(join(dir, "alias"), { recursive: true });
+      cpSync(dmg, alias);
+    }
   }
 
   // 8. Upload: archives first, the appcast last, then the stable download name.
@@ -541,7 +554,11 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
     return { published: false };
   }
   for (const command of uploads) await r.run(command.argv, { env: command.env });
-  if (!dry) say(`published ${version} (${build}) to ${mac.feedUrl}`);
+  if (!dry && channel)
+    say(
+      `published ${version} (${build}) to the beta channel of ${mac.feedUrl}; \`ship promote mac\` moves it to everyone`,
+    );
+  else if (!dry) say(`published ${version} (${build}) to ${mac.feedUrl}`);
   return { published: !dry };
 }
 
