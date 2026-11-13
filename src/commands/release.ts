@@ -6,6 +6,7 @@ import { assertRepoRoot, builtPlatforms, fetchMain, fetchTags, lock, mainRef } f
 import { errorMessage, log } from "../log.ts";
 import { releaseAndroid } from "../playlane.ts";
 import { runBeta } from "./beta.ts";
+import { releaseMac } from "./promote.ts";
 
 export interface ReleaseOptions {
   platform?: Target;
@@ -18,10 +19,11 @@ export interface ReleaseOptions {
 
 /**
  * Ships main to the stores in one step: runs the beta (build, upload, TestFlight / Play internal), then sends
- * the newest beta to review: iOS and the Mac App Store to App Review, Android to Play production. The Mac beta is already on its
- * Sparkle feed, so it needs no second step. Platforms whose build of main's
- * head commit is already uploaded skip the build, so re-runs and quiet nights don't upload duplicates. Each
- * platform's review step runs even when the other fails; the command fails if any did.
+ * the newest beta to review: iOS and the Mac App Store to App Review, Android to Play production. A Mac app on
+ * Sparkle's beta channel gets its newest beta promoted to everyone; without the channel, the beta already went to
+ * everyone. Platforms whose build of main's head commit is already uploaded skip the build, so re-runs and quiet
+ * nights don't upload duplicates. Each platform's review step runs even when the other fails; the command fails if
+ * any did.
  */
 export async function release(config: ShipConfig, options: ReleaseOptions) {
   const platforms = lanesFor(config, options.platform);
@@ -46,8 +48,7 @@ export async function release(config: ShipConfig, options: ReleaseOptions) {
       });
     for (const platform of platforms) {
       try {
-        // A Mac app has one Sparkle feed and no channels yet, so the published beta is the release.
-        if (platform === "mac") log("mac: the beta is on the app's only Sparkle feed, so there is nothing to promote");
+        if (platform === "mac") await releaseMac(config, { dry: options.dry, skipUpload: options.skipUpload });
         else if (platform === "ios" || platform === "macAppStore")
           await releaseStore(
             config,
