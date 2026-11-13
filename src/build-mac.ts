@@ -366,6 +366,12 @@ export async function shipMac(input: MacBuild): Promise<MacResult> {
     const values = JSON.parse(info) as Record<string, unknown>;
     executable = String(values.CFBundleExecutable ?? executable);
     signedFeed = values.SURequireSignedFeed === true;
+    // promote edits the appcast after publish, which would break a signed feed and strand the beta
+    stop(
+      mac.betaChannel && signedFeed
+        ? [`${mac.app} requires a signed feed, which ship promote can't edit yet; turn off mac.betaChannel`]
+        : [],
+    );
     const expected: Record<string, string> = {
       CFBundleIdentifier: mac.bundleId,
       CFBundleShortVersionString: version,

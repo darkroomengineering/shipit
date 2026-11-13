@@ -253,7 +253,7 @@ describe("a real run past preflight, with Apple's tools faked", () => {
   ];
 
   /** A runner whose tools leave the files the real ones would, and answer as a passing release would. */
-  function apple(dir: string) {
+  function apple(dir: string, signed = true) {
     const app = join(dir, "Programa.app");
     const staging = join(dir, "updates");
     const info = {
@@ -263,15 +263,13 @@ describe("a real run past preflight, with Apple's tools faked", () => {
       CFBundleExecutable: "Programa",
       SUFeedURL: "https://github.com/darkroomengineering/programa/releases/latest/download/appcast.xml",
       SUPublicEDKey: PUBLIC_KEY,
-      SURequireSignedFeed: true,
+      SURequireSignedFeed: signed,
     };
+    const signature = signed ? "\n<!-- sparkle-signatures:\nedSignature: c2ln\n-->" : "";
     const generated = `<rss><channel>
 <item><sparkle:version>${BUILD}</sparkle:version><sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
 <enclosure url="${PREFIX}programa-macos-${BUILD}.dmg" sparkle:edSignature="bmV3"/></item>
-</channel></rss>
-<!-- sparkle-signatures:
-edSignature: c2ln
--->`;
+</channel></rss>${signature}`;
     return recorder(
       {
         generate_keys: `${PUBLIC_KEY}\n`,
@@ -312,6 +310,7 @@ edSignature: c2ln
     skipUpload: boolean,
     downloaderEntitlements: string[] = ["com.apple.security.network.client"],
     betaChannel = false,
+    signed = true,
   ) => {
     const programaApp = programa();
     const { worktree } = programaApp;
@@ -320,7 +319,7 @@ edSignature: c2ln
         ? { ...programaApp.config, mac: { ...programaApp.config.mac, betaChannel } }
         : programaApp.config;
     const dir = join(worktree, "build");
-    const runner = apple(dir);
+    const runner = apple(dir, signed);
     const capture = runner.capture.bind(runner);
     runner.capture = async (argv, options) => {
       if (argv[0] !== "codesign" || argv[1] !== "-d") return capture(argv, options);
@@ -377,7 +376,7 @@ edSignature: c2ln
   });
 
   test("with betaChannel, the build goes to the beta channel and the stable download name stays put", async () => {
-    const { result, runner, dir } = ship(false, undefined, true);
+    const { result, runner, dir } = ship(false, undefined, true, false);
     expect((await result).published).toBe(true);
     expect(runner.calls.find((call) => call.includes("generate_appcast"))).toContain(" --channel beta ");
     const repo = "--repo darkroomengineering/programa";
@@ -387,6 +386,12 @@ edSignature: c2ln
       `gh release upload rolling ${dir}/updates/appcast.xml ${repo} --clobber`,
     ]);
     expect(existsSync(join(dir, "alias"))).toBe(false);
+  });
+
+  test("betaChannel on an app with a signed feed stops before building", async () => {
+    const { result, runner } = ship(false, undefined, true, true);
+    await expect(result).rejects.toThrow("requires a signed feed, which ship promote can't edit yet");
+    expect(runner.calls.some((call) => call.includes("notarytool"))).toBe(false);
   });
 
   test("Sparkle's XPC services may keep their own entitlements, app-only ones included", async () => {
