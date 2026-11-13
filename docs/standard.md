@@ -80,6 +80,7 @@ Every app ships as a rolling release. Store builds follow the store's own tracks
 
 - **One release, always the latest.** Each app has a single `rolling` GitHub release that every build replaces. Older releases, drafts and assets are deleted once the new one is published. Nobody downloads an old build.
 - **Formats:** `.dmg` on macOS, `.apk` on Android, `.exe` on Windows. Linux, where an app has it, stays `.AppImage`.
+- **Updater files ride along.** The files installed copies update from stay on the release next to the download: Sparkle's `appcast.xml`, Tauri's `latest.json` with its `.sig` and `.app.tar.gz`, and Velopack's `releases.win.json` and `.nupkg`. They are replaced with each build like everything else.
 - **Every rolling release updates over the air.** An app that can be downloaded from us has an update feed, and installed copies pick up the new build on their own.
 - **Every update notification shows a changelog.** The prompt opens a view with this version's `CHANGELOG.md` section, so people see what changed before they install.
 - **A bad build is fixed forward.** Revert on main and release again; the new build replaces the bad one. There is no rollback to an old artifact, because none is kept.
