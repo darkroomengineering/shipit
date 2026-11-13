@@ -68,6 +68,7 @@ describe("windows in ship.json", () => {
       mainExe: "Mesinyer.Windows.exe",
       runtime: "win-x64",
       channel: "win",
+      betaChannel: false,
       vpk: "1.2.161",
       workflow: "ship-windows.yml",
       release: { repo: "darkroomengineering/mesinyer-releases", tag: "rolling" },
@@ -104,6 +105,13 @@ describe("windows in ship.json", () => {
     rejects({ ...minimal, signing: { ...signing, publisher: 'x" & calc' } }, "windows.signing.publisher: must not");
     rejects({ ...minimal, signing: { ...signing, password: "x" } }, "windows.signing.password: unknown key");
     rejects({ ...minimal, installer: "msi" }, "windows.installer: unknown key");
+    rejects({ ...minimal, betaChannel: "yes" }, "windows.betaChannel: expected true or false");
+    rejects({ ...minimal, betaChannel: true, channel: "beta" }, 'windows.channel: "beta" is the beta channel');
+  });
+
+  test("betaChannel opts the app into Velopack's beta channel and keeps channel as the stable one", () => {
+    expect(parse({ ...minimal, betaChannel: true }).windows).toMatchObject({ betaChannel: true, channel: "win" });
+    expect(parse({ ...minimal, channel: "beta" }).windows?.channel).toBe("beta");
   });
 
   test("windows has a lane", () => {
