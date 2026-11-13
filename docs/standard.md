@@ -18,7 +18,7 @@ mesinyer windows.yml (Velopack) ──┐                                       
 programa build-windows.ps1 ───────┴── windows lane ───────────────────────────────┤
 pokefolio update-production.sh ────── `ship update` (guarded OTA) ────────────────┤
 nocam check-permissions + secrets ─── built-in gates + `ship doctor` ─────────────┤
-vigilia draft/finalize + aliases ──── channels, promote, rollback, latest.json ───┤
+vigilia draft/finalize + aliases ──── rolling release, latest.json ──────────────┤
 shipit tests ──────────────────────── ship meets its own standard ────────────────┤
 codigo scripts/appstore.sh ────────── Mac App Store lane ─────────────────────────┤
                                                                                   └── each app adopts ship ── verify: every app's last release came from `ship` with every gate green
@@ -33,7 +33,7 @@ before it publishes. The other apps each do one thing better, and the standard t
 | From | What the standard takes |
 | -- | -- |
 | NoCam | The phone lanes: one `ship beta` for iOS and Android from a clean worktree of main. A 1Password item for every release key, with restore steps. A permission allowlist that fails the build. Store listing kept in the repo. |
-| browsee | Release notes from `CHANGELOG.md`, required before a release runs and shown in the update window. Delta updates. Every published appcast kept, so rollback is one command. A runbook for a lost signing key. |
+| browsee | Release notes from `CHANGELOG.md`, required before a release runs and shown in the update window. Delta updates. A runbook for a lost signing key. |
 | Vigilia | One run builds Mac, Windows and Linux. The release stays a draft until every platform passes, then "latest" moves. Stable download names and a `latest.json` manifest. |
 | Pokefolio | Over-the-air updates that refuse to publish when native code changed or the tree isn't main. |
 | Mesinyer | Velopack for the Windows installer and its update feed. |
@@ -74,18 +74,26 @@ A platform that fails leaves a draft nobody can see, so "latest" never points at
 - `CHANGELOG.md` is required. Its section for the version becomes the update window text, the GitHub release notes and the store "What's new".
 - `ship` never pushes to main without a person. Version bumps go through a release PR or a tag.
 
-## 4. Channels
+## 4. Rolling releases
 
-- **Candidate:** a private draft for every build, kept for rollback (keep the newest five).
-- **Beta:** TestFlight (internal-only by default, external with a flag) for iOS and the Mac App Store, the Play internal track, and a Sparkle beta feed for Mac.
-- **Production:** `ship promote <build>` moves a beta to production. `ship rollback <build>` puts the previous build back and restores the previous feed.
+Every app ships as a rolling release. Store builds follow the store's own tracks; everything downloaded from us follows these rules:
+
+- **One release, always the latest.** Each app has a single `rolling` GitHub release that every build replaces. Older releases, drafts and assets are deleted once the new one is published. Nobody downloads an old build.
+- **Formats:** `.dmg` on macOS, `.apk` on Android, `.exe` on Windows. Linux, where an app has it, stays `.AppImage`.
+- **Every rolling release updates over the air.** An app that can be downloaded from us has an update feed, and installed copies pick up the new build on their own.
+- **Every update notification shows a changelog.** The prompt opens a view with this version's `CHANGELOG.md` section, so people see what changed before they install.
+- **A bad build is fixed forward.** Revert on main and release again; the new build replaces the bad one. There is no rollback to an old artifact, because none is kept.
+- **Delta updates come from the current build.** Before replacing it, the release job downloads the current rolling build and makes the delta from it.
+
+Store tracks: TestFlight (internal-only by default, external with a flag) for iOS and the Mac App Store, and the Play internal track. `ship release` submits the beta build to the store.
 
 ## 5. Updates
 
 Over the air first; store releases for major updates.
 
 - **Mac direct download:** Sparkle 2 with EdDSA signatures, a signed feed, update verification before extraction, and delta updates.
-- **Windows:** Velopack.
+- **Windows:** Velopack. Velopack has no update window of its own, so the app shows the changelog itself.
+- **Android direct download:** an in-app updater that checks the release feed, shows the changelog, and installs the new `.apk`. It needs the install-packages permission, so the Play build leaves it out.
 - **Vigilia (Tauri):** the Tauri updater with `latest.json`. Vigilia is the one app that keeps its own release pipeline; `ship` has no Tauri lane.
 - **Expo apps:** `ship update` publishes EAS Update, with guards against native changes and a dirty tree.
 - **Native phone apps:** remote config and content only, because Apple and Google don't allow downloaded code.
@@ -96,7 +104,7 @@ Existing update feed URLs and update signing keys never change, like bundle IDs.
 
 - New apps publish to GitHub Releases. When the source is private, they publish to a public `<app>-releases` repo.
 - Apps with an existing feed keep it where it is (browsee stays on R2 at updates.browsee.app).
-- Every release has stable download names that always point at the newest build: `<App>-mac.dmg` on Mac and `<packId>-x64-setup.exe` on Windows, each next to a per-build copy. Vigilia keeps its own names, including Linux. A `latest.json` manifest lists the version, notes and links, and the website reads it for its download buttons.
+- Every release has stable download names that always point at the newest build: `<App>-mac.dmg` on Mac and `<packId>-x64-setup.exe` on Windows, each next to a copy named for the current build that the update feeds point at. Vigilia keeps its own names, including Linux. A `latest.json` manifest lists the version, notes and links, and the website reads it for its download buttons.
 
 ## 7. Signing and secrets
 
