@@ -11,7 +11,7 @@ const USAGE = `ship: one release tool for every native app
                                                          build main, upload to TestFlight / Play internal / the Sparkle feed / GitHub
   ship release [ios|android|mac|macAppStore|windows] [--dry-run] [--skip-checks] [--skip-upload]
                                                          run ship beta, then send it to App Review / Play production
-  ship promote [mac] [--dry-run] [--build N]             move the newest Mac beta (or build N) to everyone
+  ship promote [mac|windows] [--dry-run] [--build N]     move the newest beta (or build N) to everyone; mac by default
   ship listing [ios|android] [--dry-run]                 push the store listing on main; never submits for review
   ship version [patch|minor|major] [--dry-run]           print the version, or bump it on main
   ship update "what changed" [--dry-run]                 publish main as an over-the-air EAS update (expo, JS only)

@@ -6,7 +6,7 @@ import { assertRepoRoot, builtPlatforms, fetchMain, fetchTags, lock, mainRef } f
 import { errorMessage, log } from "../log.ts";
 import { releaseAndroid } from "../playlane.ts";
 import { runBeta } from "./beta.ts";
-import { releaseMac } from "./promote.ts";
+import { releaseMac, releaseWindows } from "./promote.ts";
 
 export interface ReleaseOptions {
   platform?: Target;
@@ -20,10 +20,10 @@ export interface ReleaseOptions {
 /**
  * Ships main to the stores in one step: runs the beta (build, upload, TestFlight / Play internal), then sends
  * the newest beta to review: iOS and the Mac App Store to App Review, Android to Play production. A Mac app on
- * Sparkle's beta channel gets its newest beta promoted to everyone; without the channel, the beta already went to
- * everyone. Platforms whose build of main's head commit is already uploaded skip the build, so re-runs and quiet
- * nights don't upload duplicates. Each platform's review step runs even when the other fails; the command fails if
- * any did.
+ * Sparkle's beta channel, or a Windows app on Velopack's, gets its newest beta promoted to everyone; without the
+ * channel, the beta already went to everyone. Platforms whose build of main's head commit is already uploaded skip
+ * the build, so re-runs and quiet nights don't upload duplicates. Each platform's review step runs even when the
+ * other fails; the command fails if any did.
  */
 export async function release(config: ShipConfig, options: ReleaseOptions) {
   const platforms = lanesFor(config, options.platform);
@@ -59,7 +59,10 @@ export async function release(config: ShipConfig, options: ReleaseOptions) {
           );
         else if (platform === "android") await releaseAndroid(config, options.dry);
         // Also when the build was skipped: a beta that tagged windows can still have failed before publishing.
-        else if (config.windows) await publishRelease(config.windows.release, options.dry);
+        else if (config.windows) {
+          await publishRelease(config.windows.release, options.dry);
+          await releaseWindows(config, { dry: options.dry });
+        }
       } catch (error) {
         log(`${platform}: failed: ${errorMessage(error)}`);
         failures.push(`${platform}: ${errorMessage(error)}`);
