@@ -153,6 +153,12 @@ export interface MacDirectFields extends MacAppFields {
   deltas: number;
   /** Stable download name that always holds the newest DMG. Each build is also published as `<base>-<build>.dmg`. */
   dmg: string;
+  /**
+   * Publish each build to Sparkle's `beta` channel of the same feed instead of to everyone; `ship promote mac` moves
+   * the newest beta to the default channel. Off by default: the app first needs a "Get beta updates" setting that
+   * returns `beta` from `allowedChannels(for:)`.
+   */
+  betaChannel: boolean;
   hosting: MacHosting;
 }
 
@@ -655,6 +661,7 @@ function parseMacDirect(raw: Raw, appName: string, errors: string[]): MacDirectC
     notaryProfile: reader.optionalString("notaryProfile"),
     deltas: reader.count("deltas", 1),
     dmg: reader.optionalString("dmg") ?? `${appName}-mac.dmg`,
+    betaChannel: reader.boolean("betaChannel", false),
     hosting: parseHosting(reader.object("hosting"), local),
   };
   reader.rejectUnknown([
@@ -675,6 +682,7 @@ function parseMacDirect(raw: Raw, appName: string, errors: string[]): MacDirectC
     "notaryProfile",
     "deltas",
     "dmg",
+    "betaChannel",
     "hosting",
   ]);
   if (config.feedUrl && !/^https:\/\/[^/]+\/(.*\/)?appcast\.xml$/.test(config.feedUrl))
