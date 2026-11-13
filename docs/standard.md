@@ -49,7 +49,7 @@ Each platform gets native code: Swift on Apple platforms, Kotlin on Android, and
 A release always builds from a clean checkout of main's current head, never from a working tree.
 
 - **Desktop apps** release from CI when main goes green. The Windows build needs a Windows runner, so CI is required there anyway.
-- **Phone apps** can release from a Mac with `ship beta`, which uses a clean worktree of main. They move to CI once `ship ci` is complete.
+- **Phone apps** release from CI too, on the studio Mac runner. `ship beta` from a laptop (a clean worktree of main) is for emergencies only.
 - The same `ship` code runs locally and in CI. An app's CI calls the reusable workflows in `darkroomengineering/shipit/.github/workflows` (for example `windows-lane.yml`) through a small caller workflow.
 
 ## 2. The stages
@@ -78,8 +78,10 @@ A platform that fails leaves a draft nobody can see, so "latest" never points at
 
 Every app ships as a rolling release. Store builds follow the store's own tracks; everything downloaded from us follows these rules:
 
-- **One release, always the latest.** Each app has a single `rolling` GitHub release that every build replaces. Older releases, drafts and assets are deleted once the new one is published. Nobody downloads an old build.
-- **Formats:** `.dmg` on macOS, `.apk` on Android, `.exe` on Windows. Linux, where an app has it, stays `.AppImage`.
+- **Two channels, beta and rolling.** Every green build on main publishes to `beta`. `ship promote` (one click in Actions) moves that build to `rolling`, which everyone gets. Testers join beta with a "Get beta updates" toggle in the app; there is no separate beta download.
+- **One release per channel, always the latest.** `beta` and `rolling` are single GitHub releases that every build replaces. Older releases, drafts and assets are deleted once the new one is published. Nobody downloads an old build.
+- **Formats:** `.dmg` on macOS, `.apk` on Android, `.exe` on Windows, `.AppImage` on Linux. Nothing else (no `.msi`, `.deb` or `.zip`).
+- **Store apps:** a Mac app in the Mac App Store keeps its direct `.dmg` too. An Android app in Google Play does not also publish an `.apk`.
 - **Updater files ride along.** The files installed copies update from stay on the release next to the download: Sparkle's `appcast.xml`, Tauri's `latest.json` with its `.sig` and `.app.tar.gz`, and Velopack's `releases.win.json` and `.nupkg`. They are replaced with each build like everything else.
 - **Every rolling release updates over the air.** An app that can be downloaded from us has an update feed, and installed copies pick up the new build on their own.
 - **Every update notification shows a changelog.** The prompt opens a view with this version's `CHANGELOG.md` section, so people see what changed before they install.
@@ -96,7 +98,7 @@ Over the air first; store releases for major updates.
 - **Windows:** Velopack. Velopack has no update window of its own, so the app shows the changelog itself.
 - **Android direct download:** an in-app updater that checks the release feed, shows the changelog, and installs the new `.apk`. It needs the install-packages permission, so the Play build leaves it out.
 - **Vigilia (Tauri):** the Tauri updater with `latest.json`. Vigilia is the one app that keeps its own release pipeline; `ship` has no Tauri lane.
-- **Expo apps:** `ship update` publishes EAS Update, with guards against native changes and a dirty tree.
+- **Expo apps:** `ship update` publishes EAS Update, with guards against native changes and a dirty tree. Whether a change can go over the air or needs a store build is decided per release: an agent reviews the diff since the last store build, and anything touching native code, native dependencies or permissions goes through the store.
 - **Native phone apps:** remote config and content only, because Apple and Google don't allow downloaded code.
 
 Existing update feed URLs and update signing keys never change, like bundle IDs. Changing either strands every installed copy.
@@ -111,7 +113,7 @@ Existing update feed URLs and update signing keys never change, like bundle IDs.
 
 - **Mac:** Developer ID, notarized and stapled, under team ZNHHMX2RP6.
 - **Mac App Store:** Apple Distribution for the app and 3rd Party Mac Developer Installer for the package, with the app's provisioning profile embedded, under the same team.
-- **Windows:** Azure Artifact Signing, which signs in CI without a stored certificate.
+- **Windows:** Azure Artifact Signing, which signs in CI without a stored certificate. Until it is set up, Windows builds ship unsigned and people click through the SmartScreen warning.
 - **Linux:** updater signatures only.
 - CI secrets live in a GitHub `release` environment, set once for the org where possible.
 - Every secret has a 1Password item. `ship.json` lists them, and `ship doctor` prints how to restore each one on a new Mac.
