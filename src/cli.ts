@@ -11,6 +11,7 @@ const USAGE = `ship: one release tool for every native app
                                                          build main, upload to TestFlight / Play internal / the Sparkle feed / GitHub
   ship release [ios|android|mac|macAppStore|windows] [--dry-run] [--skip-checks] [--skip-upload]
                                                          run ship beta, then send it to App Review / Play production
+  ship promote [mac] [--dry-run] [--build N]             move the newest Mac beta (or build N) to everyone
   ship listing [ios|android] [--dry-run]                 push the store listing on main; never submits for review
   ship version [patch|minor|major] [--dry-run]           print the version, or bump it on main
   ship update "what changed" [--dry-run]                 publish main as an over-the-air EAS update (expo, JS only)
@@ -29,6 +30,7 @@ const { values, positionals } = parseArgs({
     "skip-checks": { type: "boolean", default: false },
     "skip-upload": { type: "boolean", default: false },
     ref: { type: "string" },
+    build: { type: "string" },
     C: { type: "string", short: "C" },
     help: { type: "boolean", short: "h", default: false },
   },
@@ -73,6 +75,10 @@ async function main() {
         skipChecks: values["skip-checks"],
         skipUpload: values["skip-upload"],
       });
+    }
+    case "promote": {
+      const { promote } = await import("./commands/promote.ts");
+      return promote(loadConfig(root), { platform: platformArg(), dry, build: values.build });
     }
     case "listing": {
       const { listing } = await import("./commands/listing.ts");
