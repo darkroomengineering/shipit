@@ -70,7 +70,7 @@ function setup(published: string | undefined, overrides: object = {}) {
 }
 
 describe("ship promote mac", () => {
-  test("moves the newest beta to everyone: the edited appcast, then its DMG under the stable name", async () => {
+  test("moves the newest beta to everyone: its DMG under the stable name, then the edited appcast", async () => {
     const { dir, downloaded, config, options } = setup(feed(entry("7", "beta"), entry("6", "beta"), entry("5")));
     const runner = recorder();
     await runPromote(config, { ...options, dry: false, runner });
@@ -78,8 +78,8 @@ describe("ship promote mac", () => {
     expect(readFileSync(join(dir, "appcast.xml"), "utf8")).toBe(feed(entry("7"), entry("6", "beta"), entry("5")));
     expect(readFileSync(join(dir, "alias", "Demo.dmg"), "utf8")).toBe(`dmg of ${PREFIX}Demo-7.dmg`);
     expect(runner.calls).toEqual([
-      `gh release upload rolling ${dir}/appcast.xml --repo acme/demo --clobber`,
       `gh release upload rolling ${dir}/alias/Demo.dmg --repo acme/demo --clobber`,
+      `gh release upload rolling ${dir}/appcast.xml --repo acme/demo --clobber`,
     ]);
   });
 
@@ -89,8 +89,8 @@ describe("ship promote mac", () => {
     await promote(config, { ...options, dry: false, runner });
     expect(downloaded).toEqual([`${PREFIX}Demo-7.dmg`]);
     expect(runner.calls).toEqual([
-      `gh release upload rolling ${dir}/appcast.xml --repo acme/demo --clobber`,
       `gh release upload rolling ${dir}/alias/Demo.dmg --repo acme/demo --clobber`,
+      `gh release upload rolling ${dir}/appcast.xml --repo acme/demo --clobber`,
     ]);
     // The lock is released, so a second run can take it.
     await promote(config, { ...options, platform: "mac", dry: false, runner: recorder(), build: "7" });
@@ -113,8 +113,8 @@ describe("ship promote mac", () => {
     expect(lines).toEqual([
       `dry run: would write the appcast with 7 on the default channel to ${dir}/appcast.xml`,
       `dry run: would download ${PREFIX}Demo-7.dmg to ${dir}/Demo-7.dmg and copy it to ${dir}/alias/Demo.dmg`,
-      `dry run: would run gh release upload rolling ${dir}/appcast.xml --repo acme/demo --clobber`,
       `dry run: would run gh release upload rolling ${dir}/alias/Demo.dmg --repo acme/demo --clobber`,
+      `dry run: would run gh release upload rolling ${dir}/appcast.xml --repo acme/demo --clobber`,
     ]);
   });
 

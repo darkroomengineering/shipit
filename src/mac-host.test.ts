@@ -63,11 +63,11 @@ describe("the GitHub release host", () => {
     expect(uploads.map((command) => command.argv.includes("--clobber"))).toEqual([false, false, true, true]);
   });
 
-  test("a beta-channel build uploads no alias; promote uploads the appcast, then the alias, as a release ends", () => {
+  test("a beta-channel build uploads no alias; promote uploads the alias, then the appcast", () => {
     const host = githubHost(github, latest);
     const { alias, ...beta } = files;
     expect(host.uploads(beta)).toEqual(host.uploads(files).slice(0, -1));
-    expect(host.promoteUploads({ appcast: files.appcast, alias })).toEqual(host.uploads(files).slice(-2));
+    expect(host.promoteUploads({ appcast: files.appcast, alias })).toEqual(host.uploads(files).slice(-2).reverse());
   });
 
   test("checks the release is public, and that it is the latest when the feed reads the latest release", () => {
@@ -123,17 +123,17 @@ describe("the R2 host", () => {
     expect(r2Host(r2, feed, { AWS_ACCESS_KEY_ID: "k" }).uploads(files)[0]?.env).toEqual({ AWS_DEFAULT_REGION: "auto" });
   });
 
-  test("a beta-channel build uploads no alias; promote uploads the appcast with no-cache, then the alias", () => {
+  test("a beta-channel build uploads no alias; promote uploads the alias, then the appcast with no-cache", () => {
     const host = r2Host(r2, feed, {});
     const { alias, ...beta } = files;
     expect(host.uploads(beta)).toEqual(host.uploads(files).slice(0, -1));
     const promote = host.promoteUploads({ appcast: files.appcast, alias });
-    expect(promote).toEqual(host.uploads(files).slice(-2));
+    expect(promote).toEqual(host.uploads(files).slice(-2).reverse());
     expect(promote.map((command) => command.argv.find((arg) => arg.startsWith("s3://")))).toEqual([
-      "s3://browsee-updates/appcast.xml",
       "s3://browsee-updates/programa-macos.dmg",
+      "s3://browsee-updates/appcast.xml",
     ]);
-    expect(promote[0]?.argv.slice(-2)).toEqual(["--cache-control", "no-cache"]);
+    expect(promote[1]?.argv.slice(-2)).toEqual(["--cache-control", "no-cache"]);
   });
 
   test("hostFor picks the adapter from the config", () => {

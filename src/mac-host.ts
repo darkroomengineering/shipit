@@ -43,7 +43,7 @@ export interface MacHost {
   readonly downloadPrefix: string;
   checks(): HostCheck[];
   uploads(files: Publication): Command[];
-  /** The appcast, then the alias, uploaded as a release's last two steps are. */
+  /** The stable download first, the feed last: a failed upload leaves the build on beta, so promote can retry. */
   promoteUploads(files: Promotion): Command[];
 }
 
@@ -78,7 +78,7 @@ export function githubHost(hosting: GithubHosting, feedUrl: string): MacHost {
       upload([files.appcast], true),
       ...(files.alias ? [upload([files.alias], true)] : []),
     ],
-    promoteUploads: (files) => [upload([files.appcast], true), upload([files.alias], true)],
+    promoteUploads: (files) => [upload([files.alias], true), upload([files.appcast], true)],
   };
 }
 
@@ -115,7 +115,7 @@ export function r2Host(hosting: R2Hosting, feedUrl: string, env: NodeJS.ProcessE
       appcast(files.appcast),
       ...(files.alias ? [alias(files.alias)] : []),
     ],
-    promoteUploads: (files) => [appcast(files.appcast), alias(files.alias)],
+    promoteUploads: (files) => [alias(files.alias), appcast(files.appcast)],
   };
 }
 
