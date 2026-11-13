@@ -62,9 +62,9 @@ Every lane runs the same steps in order:
 4. **Verify** the result before anything is uploaded (see gates below).
 5. **Package and upload:** notarize and staple for Mac direct download, a signed installer package for the Mac App Store, upload to the store for phones.
 6. **Draft.** Every platform's output goes into one draft release.
-7. **Finalize** only when every platform passed: publish, update the stable download names and the update feeds, then tag.
+7. **Finalize** each platform that passed: publish it, update its stable download name and update feed, then tag.
 
-A platform that fails leaves a draft nobody can see, so "latest" never points at a half-finished release.
+Platforms share the version but don't block each other. A platform that fails keeps its previous build public until its lane passes, so a flaky Windows build never holds back the Mac release.
 
 `ship release` runs the whole beta first and submits that build, so one command takes main to the stores.
 
@@ -72,13 +72,15 @@ A platform that fails leaves a draft nobody can see, so "latest" never points at
 
 - One version per release across all platforms. The build number comes from one source per release (the CI run or the build time), so it only goes up and every platform shares it.
 - `CHANGELOG.md` is required. Its section for the version becomes the update window text, the GitHub release notes and the store "What's new".
-- `ship` never pushes to main without a person. Version bumps go through a release PR or a tag.
+- `ship` never pushes to main without a person. Version bumps go through a release PR or a tag; an agent proposes major, minor or patch from the changelog and a person merges it.
+- Every PR with a user-visible change adds a line under `## Unreleased` in `CHANGELOG.md`, written for users. The release turns that section into the version's section.
 
 ## 4. Rolling releases
 
 Every app ships as a rolling release. Store builds follow the store's own tracks; everything downloaded from us follows these rules:
 
-- **Two channels, beta and rolling.** Every green build on main publishes to `beta`. `ship promote` (one click in Actions) moves that build to `rolling`, which everyone gets. Testers join beta with a "Get beta updates" toggle in the app; there is no separate beta download.
+- **Two channels, beta and rolling.** Every green build on main publishes to `beta`. `ship promote` (one click in Actions) moves that build to `rolling`, which everyone gets. Testers join beta with a "Get beta updates" toggle in the app; there is no separate beta download. People and agents may promote whenever the build is ready; there is no minimum time on beta. Hotfixes go through beta like everything else.
+- **Leaving beta doesn't downgrade.** Someone who turns the toggle off stays on the beta build until rolling passes it, so any data migration in a beta build must be one the next rolling build can also run.
 - **One release per channel, always the latest.** `beta` and `rolling` are single GitHub releases that every build replaces. Older releases, drafts and assets are deleted once the new one is published. Nobody downloads an old build.
 - **Formats:** `.dmg` on macOS, `.apk` on Android, `.exe` on Windows, `.AppImage` on Linux. Nothing else (no `.msi`, `.deb` or `.zip`).
 - **Store apps:** a Mac app in the Mac App Store keeps its direct `.dmg` too. An Android app in Google Play does not also publish an `.apk`.
@@ -130,13 +132,42 @@ Existing update feed URLs and update signing keys never change, like bundle IDs.
 - The app and every helper process have an icon and a display name. Helpers must not show as "browsee Helper (GPU)" in Activity Monitor or Screen Time.
 - Store uploads count as failed when Apple returns a rejection, even if the tool exits 0.
 
-## 9. Store listings
+## 9. The studio Mac runner
+
+Mac and iOS jobs for private repos run on the studio Mac, a GitHub Actions self-hosted runner in the org. Public repos stay on GitHub's hosted runners, which are free for them and keep fork PRs off the studio machine.
+
+- **Two runner instances.** `studio-release` takes only release workflows, so releases never queue behind CI. `studio-ci` takes PR builds and tests.
+- **Workflows pick it through a variable:** `runs-on: ${{ vars.MAC_RUNNER || 'macos-26' }}`. When the studio Mac is offline, an agent may point `MAC_RUNNER` at GitHub's hosted runners for a release that is waiting, then switch it back. CI waits for the studio Mac; switching CI to paid minutes needs a person.
+- **Xcode:** versions are installed side by side and each workflow names the one it needs. Installing or updating Xcode or macOS, and rebooting, is a person's job. Agents may clear build caches and old simulators.
+- **Health:** a weekly job on the runner posts disk space, uptime and installed Xcode versions to Slack.
+- The signing certificate arrives from GitHub secrets during a run, goes into a temporary keychain, and is deleted when the run ends.
+
+## 10. Who does what
+
+| | Agents | People |
+| -- | -- | -- |
+| Publish to beta | Yes | Yes |
+| `ship promote` to rolling | Yes | Yes |
+| `ship release` (submit for store review) | No | Yes |
+| Store review rejections | Draft the reply | Send it |
+| Version bump | Propose in the release PR | Merge it |
+| Switch `MAC_RUNNER` to hosted runners | For a waiting release | Anything |
+| New app: App Store record, bundle ID, 1Password items, domains | Prepare everything | Create them |
+| Update Xcode or macOS on the runner | No | Yes |
+
+## 11. New apps
+
+- Bundle IDs are `engineering.darkroom.<app>`. Existing apps keep theirs (`com.darkroom.*`, `com.frz.*`, `com.arzafran.*`), since a bundle ID can never change.
+- Private source publishes to a public `<app>-releases` repo.
+- Apps support the current OS and the one before it.
+
+## 12. Store listings
 
 The listing lives in the repo: name, subtitle, description, keywords, URLs, screenshots and privacy answers,
 including the credit line "A sidequest by Darkroom Engineering Incubator." `ship listing` pushes it and never
 submits for review.
 
-## 10. ship itself
+## 13. ship itself
 
 `ship` meets the same bar: tests in CI, no unattended pushes to main, and this file kept current.
 
