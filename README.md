@@ -22,7 +22,7 @@ Run `ship` from the app's folder (where `ship.json` lives, which is also the git
 | Lane | iOS | Android | Mac | Mac App Store | Command |
 | --- | --- | --- | --- | --- | --- |
 | Beta | TestFlight, external groups, Beta App Review | Play internal track | Notarized DMG on the app's Sparkle feed | TestFlight | `ship beta` |
-| Release | Beta, then App Review (App Store) | Beta, then Play production | The beta (one feed, nothing to promote) | Beta, then App Review (Mac App Store) | `ship release` |
+| Release | Beta, then App Review (App Store) | Beta, then Play production | The beta; with `betaChannel`, the beta promoted to everyone | Beta, then App Review (Mac App Store) | `ship release` |
 
 **Beta.** `ship beta` always builds from a clean worktree of `origin/main`, so uncommitted work never ships. A repository with no `origin` remote builds its local `main` and pushes nothing (tags and version bumps stay local). It:
 
@@ -165,7 +165,7 @@ Every guard runs and prints its result, so one run lists every problem. Then it 
 
 ## Mac direct download
 
-`ship beta mac` builds main in a clean worktree, as the phone lanes do, and publishes a Developer ID signed, notarized DMG to the app's Sparkle feed. `ship release mac` runs the same beta: a Mac app has one feed and no channels yet, so the published beta is the release and there is nothing to promote. Steps, in order:
+`ship beta mac` builds main in a clean worktree, as the phone lanes do, and publishes a Developer ID signed, notarized DMG to the app's Sparkle feed. By default every build goes to everyone, so `ship release mac` runs the same beta and has nothing to promote. An app with `betaChannel` publishes each build to Sparkle's beta channel instead, and `ship promote mac` moves it to everyone (see [Beta channel](#beta-channel)). Steps, in order:
 
 1. **Preflight.** `CHANGELOG.md` (or `changelog`) has a section for the version, headed `## 1.2.3` or `## [1.2.3] - date`. The build number is higher than every build in the published appcast, read from `feedUrl` (builds compare as whole numbers of any length). The Sparkle private key matches `publicKey`: in CI the key in `SPARKLE_PRIVATE_KEY` is checked before anything runs, on a Mac the keychain key (`generate_keys --account <sparkleAccount> -p`) right after Swift packages resolve, before the build. A `command` build names where Sparkle's tools are (below). The hosting is ready (below). Any failure stops the run.
 2. **Stamp and build.** For an Xcode build, `xcodegen generate` first when `kind` is `xcodegen`, then `xcodebuild archive` with `MARKETING_VERSION`, `CURRENT_PROJECT_VERSION` and `ARCHS` set and signing off. For a `command` build, `build` runs with `bash -c` from the repository root, with `SHIP_VERSION` and `SHIP_BUILD_NUMBER` set, and must leave the app at `app`; ship copies it and sets `CFBundleShortVersionString` and `CFBundleVersion` itself. The app must embed Sparkle either way. ship writes `feedUrl` and `publicKey` into the app's `SUFeedURL` and `SUPublicEDKey` (the keys must already be in its Info.plist) and checks the bundle id, version and build.
@@ -173,11 +173,17 @@ Every guard runs and prints its result, so one run lists every problem. Then it 
 4. **Verify.** The app carries every `requiredEntitlements` key and no `forbiddenEntitlements` key; `sign` entries without their own entitlements carry neither; Sparkle's parts and `sign` entries with `helperEntitlements` keep their own but no forbidden key; the main executable and each `binaries` entry hold exactly `architectures` (`lipo -archs`).
 5. **Notarize** the app with `notarytool` and staple it, so a copy dragged out of the DMG works offline, and check it with `spctl -a -vv`.
 6. **DMG** with `hdiutil`: the app and an Applications link, signed, notarized, stapled and checked with `spctl`.
-7. **Appcast.** Sparkle's `generate_appcast` (from `SPARKLE_BIN`, then `sparkleBin`, then the app's SwiftPM artifacts) extends the published appcast, makes deltas from the newest `deltas` releases, embeds the CHANGELOG section as the update notes, and signs the archive and, when the app sets `SURequireSignedFeed`, the feed. Each build's DMG is `<dmg base>-<build>.dmg`, a URL that never changes, because Sparkle rejects an archive whose bytes changed under a signed URL (error 4005). The appcast is checked, never edited, and kept as `appcast-<build>.xml` in `~/Library/Caches/shipit/<app>-<hash>/appcasts/` and on the host, for rollback.
-8. **Upload** archives first, then `appcast-<build>.xml`, then `appcast.xml`, then the stable `dmg` name, so the feed never names a file that is not there. On GitHub an archive that already exists stops the upload, since `gh` uploads it without `--clobber`; on R2 `aws s3 cp` would overwrite it, so there only the per-build names keep archives apart.
+7. **Appcast.** Sparkle's `generate_appcast` (from `SPARKLE_BIN`, then `sparkleBin`, then the app's SwiftPM artifacts) extends the published appcast, makes deltas from the newest `deltas` releases, embeds the CHANGELOG section as the update notes, puts the new item on the `beta` channel when `betaChannel` is on, and signs the archive and, when the app sets `SURequireSignedFeed`, the feed. Each build's DMG is `<dmg base>-<build>.dmg`, a URL that never changes, because Sparkle rejects an archive whose bytes changed under a signed URL (error 4005). The appcast is checked, never edited, and kept as `appcast-<build>.xml` in `~/Library/Caches/shipit/<app>-<hash>/appcasts/` and on the host, for rollback.
+8. **Upload** archives first, then `appcast-<build>.xml`, then `appcast.xml`, then the stable `dmg` name, so the feed never names a file that is not there. A beta-channel build leaves the stable name alone, since it still has to download what everyone gets. On GitHub an archive that already exists stops the upload, since `gh` uploads it without `--clobber`; on R2 `aws s3 cp` would overwrite it, so there only the per-build names keep archives apart.
 9. **Tag** `v<version>-<build>`, as every lane does.
 
 `--dry-run` prints every command it would run and runs none of them; it reads the public feed to check the build number and reports what a real run would refuse, then keeps printing. `--skip-upload` runs everything through the appcast, notarization included, and prints the uploads instead of running them; nothing is published or tagged. `ship ci` runs the mac lane as a dry run, like every lane.
+
+### Beta channel
+
+With `"betaChannel": true`, each `ship beta mac` publishes the build with `<sparkle:channel>beta</sparkle:channel>` on its appcast item. Installed copies only see it when the app asks for the channel, so the app must implement `allowedChannels(for:)` in its `SPUUpdaterDelegate` and return `["beta"]` while a "Get beta updates" setting is on (an empty set otherwise). The app needs that setting before `betaChannel` is turned on; until then nobody gets beta builds. Everything else stays as it is: one appcast, one release and the same feed URL.
+
+`ship promote mac` moves the newest beta to everyone. It reads the published appcast from `feedUrl`, removes that item's `<sparkle:channel>` element and leaves every other byte as it was, then uploads the edited `appcast.xml` and the build's DMG under the stable `dmg` name, as the last two steps of a release do. `--build N` promotes build N instead. It refuses when no beta is newer than every build on the default channel, and when the feed carries a feed signature (`SURequireSignedFeed`): editing the feed would invalidate the signature, so signed feeds can't be promoted yet. `--dry-run` reads the feed and prints every command without downloading or uploading anything. `ship release mac` does the same promote after its beta, and a run that finds nothing newer to promote, such as a quiet night, is not a failure. Other platforms have no beta channel yet.
 
 ```jsonc
 {
@@ -254,7 +260,8 @@ browsee's feed stays on R2:
 | `mac.binaries` | More Mach-O files whose architectures are checked, besides the main executable. |
 | `mac.notaryProfile` | `notarytool` keychain profile for runs on a Mac. Without one, and always when `CI` is set, notarytool uses the App Store Connect key from [Credentials](#credentials). |
 | `mac.deltas` | Previous releases generate_appcast makes delta updates from. Default 1. |
-| `mac.dmg` | The stable download name, always the newest DMG. Default `<name>-mac.dmg`. Set it when the app already publishes another name (`Browsee.dmg`, `programa-macos.dmg`). |
+| `mac.dmg` | The stable download name, always the newest DMG everyone gets. Default `<name>-mac.dmg`. Set it when the app already publishes another name (`Browsee.dmg`, `programa-macos.dmg`). |
+| `mac.betaChannel` | `true` publishes each build to Sparkle's `beta` channel of the same feed, and `ship promote mac` moves it to everyone. Default `false`. Turn it on only once the app has a "Get beta updates" setting; see [Beta channel](#beta-channel). |
 | `mac.hosting` | `{ "type": "github", "repo", "tag" }`: archives on one GitHub release, with the feed at `releases/latest/download/appcast.xml` (the release must be the latest) or `releases/download/<tag>/appcast.xml`; uploads with `gh`. `{ "type": "r2", "bucket", "accountId", "profile" }`: an R2 bucket served at the feed's domain, with the feed at `/appcast.xml`; uploads with the `aws` CLI, and `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` win over the profile. |
 
 Signing and Sparkle need, besides the App Store Connect key:
@@ -409,6 +416,7 @@ The agent runs `ship nightly` at 03:00 with a PATH that includes `/opt/homebrew/
 ## Other commands
 
 - `ship ci`: for CI runners; on Windows it builds the windows lane (see [Windows](#windows)). It refuses unless the checkout is clean and `HEAD` is `origin/main` after a fetch, records that commit, runs `gates`, builds every lane from that commit as a dry run (the mac lane prints its plan), and checks `origin/main` has not moved before it would publish. Publishing is not wired in yet, so it releases nothing.
+- `ship promote [mac] [--dry-run] [--build N]`: moves the newest Mac beta, or build N, to everyone; see [Beta channel](#beta-channel).
 - `ship update "what changed"`: publishes main as an over-the-air update for Expo apps; see [Over-the-air updates](#over-the-air-updates).
 - `ship status`: the latest TestFlight build and its beta review state, App Store version states, and Play internal and production versions.
 - `ship doctor`: tools (`xcodebuild`, `xcodegen` or `pod`, `bun`, `java` for Android), credentials, the key file, the App Store Connect app, each external group, the Play key, and for Expo apps a warning when `ios/.xcode.env.local` points `NODE_BINARY` at a node that no longer exists.
