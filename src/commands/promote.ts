@@ -136,7 +136,11 @@ export async function runPromoteWindows(config: ShipConfig, options: PromoteOpti
 
   const assets = assetNames(await read(releaseAssets(release)));
   const index = feedIndex(channel);
-  const live = assets.includes(index) ? await read(releaseRead(release, index)) : undefined;
+  // gh may cap the asset list on a release with many staged files, so a missing index is read anyway: treating a
+  // live stable feed as absent would let an older staged build overwrite a newer stable one.
+  const live = assets.includes(index)
+    ? await read(releaseRead(release, index))
+    : await read(releaseRead(release, index)).catch(() => undefined);
   const promotion = windowsPromotion(windows, assets, live, options.build);
   const { build, version } = promotion;
   say(`promoting ${version} (${build}) from beta to everyone`);

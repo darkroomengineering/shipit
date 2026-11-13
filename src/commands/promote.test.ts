@@ -308,8 +308,20 @@ describe("ship promote windows", () => {
     const { reads, config, options } = windowsSetup(staged("508"), undefined);
     const runner = ghRecorder();
     await runPromoteWindows(config, { ...options, dry: false, runner });
-    expect(reads).toEqual([`gh release view rolling --json assets ${GH}`]);
+    expect(reads).toEqual([
+      `gh release view rolling --json assets ${GH}`,
+      `gh release download rolling --pattern releases.win.json --output - ${GH}`,
+    ]);
     expect(runner.calls.at(-1)).toEndWith(`/releases.win.json --clobber ${GH}`);
+  });
+
+  test("reads the stable feed even when the asset list leaves it out, and refuses an older staged build", async () => {
+    const { config, options } = windowsSetup(staged("508"), liveIndex("509"));
+    const runner = ghRecorder();
+    await expect(runPromoteWindows(config, { ...options, dry: false, runner })).rejects.toThrow(
+      "build 508 is not newer than 509 on the win channel",
+    );
+    expect(runner.calls).toEqual([]);
   });
 
   test("a dry run reads the release, prints every command and downloads, writes and uploads nothing", async () => {
