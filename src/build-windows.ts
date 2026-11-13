@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import type { Platform, ShipConfig, WindowsConfig, WindowsRelease } from "./config.ts";
 import { git, mainRef } from "./git.ts";
 import { log, run, warn } from "./log.ts";
+import { NothingToPromoteError } from "./sparkle.ts";
 
 /** The `sign` CLI version Programa's release workflow installs. */
 const SIGN_VERSION = "1.1.5";
@@ -145,6 +146,12 @@ export const releaseView = (release: WindowsRelease) => gh(release, "view", rele
 export const releaseUpload = (release: WindowsRelease, files: string[], clobber = true) =>
   gh(release, "upload", release.tag, ...files, ...(clobber ? ["--clobber"] : []));
 export const releasePublish = (release: WindowsRelease) => gh(release, "edit", release.tag, "--draft=false");
+export const releaseAssets = (release: WindowsRelease) => gh(release, "view", release.tag, "--json", "assets");
+/** Prints one asset to stdout. */
+export const releaseRead = (release: WindowsRelease, asset: string) =>
+  gh(release, "download", release.tag, "--pattern", asset, "--output", "-");
+export const releaseDownload = (release: WindowsRelease, assets: string[], dir: string) =>
+  gh(release, "download", release.tag, ...assets.flatMap((asset) => ["--pattern", asset]), "--dir", dir);
 function releaseCreate(r: WindowsRun, sameRepo: boolean) {
   const { release } = r.windows;
   return gh(
@@ -458,6 +465,110 @@ async function upload(r: WindowsRun, packaged: Packaged) {
   );
   for (const command of exists ? uploads : [create, ...uploads]) await run(command, { capture: true });
   log(`windows: uploaded to ${release.repo} release ${release.tag}`);
+}
+
+/** Asset names from `gh release view --json assets`. */
+export function assetNames(json: string): string[] {
+  const { assets } = JSON.parse(json) as { assets?: unknown };
+  if (!Array.isArray(assets)) throw new Error("gh release view --json assets printed no assets list");
+  return assets.flatMap((asset) =>
+    typeof asset === "object" && asset !== null && typeof (asset as { name?: unknown }).name === "string"
+      ? [(asset as { name: string }).name]
+      : [],
+  );
+}
+
+/** The newest build a Velopack feed index names in a `<version>-build.<build>` version; undefined when none. */
+export function feedBuild(index: string): bigint | undefined {
+  const { Assets } = JSON.parse(index) as { Assets?: unknown };
+  if (!Array.isArray(Assets)) return undefined;
+  let newest: bigint | undefined;
+  for (const asset of Assets) {
+    const version = typeof asset === "object" && asset !== null ? (asset as { Version?: unknown }).Version : undefined;
+    const build = typeof version === "string" ? /-build\.(\d+)$/.exec(version)?.[1] : undefined;
+    if (build !== undefined && (newest === undefined || BigInt(build) > newest)) newest = BigInt(build);
+  }
+  return newest;
+}
+
+/** One staged build `ship promote windows` publishes to the stable channel. */
+export interface WindowsPromotion {
+  build: string;
+  version: string;
+  /** Each staged asset and the stable feed name it goes up under. */
+  staged: { asset: string; name: string }[];
+  /** The build's versioned installer asset, which goes up again under the stable installer name. */
+  versioned: string;
+  alias: string;
+}
+
+/**
+ * Picks the staged build to promote from the release's assets: `build`, or the newest. Refuses a build that is not
+ * newer than every build in the live stable feed (`liveIndex`, undefined when the release has none yet), and one
+ * whose staged feed index, full package or versioned installer is not on the release.
+ */
+export function windowsPromotion(
+  windows: WindowsConfig,
+  assets: string[],
+  liveIndex: string | undefined,
+  build?: string,
+): WindowsPromotion {
+  if (build !== undefined && !/^\d+$/.test(build)) throw new Error(`--build ${build} is not a build number`);
+  const prefix = `${windows.packId}-`;
+  const staged = new Map<string, { asset: string; name: string }[]>();
+  for (const asset of assets) {
+    const match = asset.startsWith(prefix) ? /^(\d+)-staged-(.+)$/.exec(asset.slice(prefix.length)) : null;
+    if (!match?.[1] || !match[2]) continue;
+    staged.set(match[1], [...(staged.get(match[1]) ?? []), { asset, name: match[2] }]);
+  }
+  const chosen = build ?? [...staged.keys()].sort((a, b) => (BigInt(b) > BigInt(a) ? 1 : -1))[0];
+  const { tag } = windows.release;
+  if (chosen === undefined) throw new NothingToPromoteError(`the ${tag} release has no staged build to promote`);
+  const files = staged.get(chosen);
+  if (!files) throw new Error(`the ${tag} release has no staged files for build ${chosen}`);
+  const index = feedIndex(windows.channel);
+  if (liveIndex !== undefined) {
+    const live = feedBuild(liveIndex);
+    if (live === undefined)
+      throw new Error(
+        `the live ${index} names no <version>-build.<build> version, so promote can't tell what it holds`,
+      );
+    if (BigInt(chosen) <= live)
+      throw new NothingToPromoteError(
+        `build ${chosen} is not newer than ${live} on the ${windows.channel} channel; nothing newer than the ${windows.channel} channel to promote`,
+      );
+  }
+  if (!files.some((file) => file.name === index))
+    throw new Error(`build ${chosen} has no ${stagedName(windows, chosen, index)} on the ${tag} release`);
+  const arch = windows.runtime.slice("win-".length);
+  const suffix = `-${chosen}-${arch}-setup.exe`;
+  const versioned = assets.find(
+    (asset) =>
+      asset.startsWith(prefix) &&
+      asset.endsWith(suffix) &&
+      /^\d+\.\d+\.\d+$/.test(asset.slice(prefix.length, -suffix.length)),
+  );
+  if (!versioned) throw new Error(`build ${chosen} has no ${prefix}<version>${suffix} installer on the ${tag} release`);
+  const version = versioned.slice(prefix.length, -suffix.length);
+  const names = installerNames(windows, version, chosen);
+  const nupkg = fullPackageName(windows, version, chosen, windows.channel);
+  if (!assets.includes(nupkg)) throw new Error(`build ${chosen} has no ${nupkg} on the ${tag} release`);
+  return { build: chosen, version, staged: files, versioned, alias: names.alias };
+}
+
+/**
+ * What `ship promote windows` uploads: the stable installer name first, then the staged feed files under their
+ * stable names, and the feed index installed copies read last, so a failed upload leaves the stable channel as it
+ * was and a second promote retries it.
+ */
+export function promoteUploads(release: WindowsRelease, channel: string, alias: string, feed: string[]): string[][] {
+  const index = feed.filter((file) => basename(file) === feedIndex(channel));
+  const rest = feed.filter((file) => basename(file) !== feedIndex(channel));
+  return [
+    releaseUpload(release, [alias]),
+    ...(rest.length ? [releaseUpload(release, rest.sort())] : []),
+    releaseUpload(release, index),
+  ];
 }
 
 /** The id of the listed run whose name carries `dispatchId`, from `gh run list --json databaseId,displayTitle`. */
