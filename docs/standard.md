@@ -49,7 +49,7 @@ Each platform gets native code: Swift on Apple platforms, Kotlin on Android, and
 A release always builds from a clean checkout of main's current head, never from a working tree.
 
 - **Desktop apps** release from CI when main goes green. The Windows build needs a Windows runner, so CI is required there anyway.
-- **Phone apps** release from CI too, on the studio Mac runner. `ship beta` from a laptop (a clean worktree of main) is for emergencies only.
+- **Phone apps** release from CI too, on darky-body, the studio Mac runner. `ship beta` from a laptop (a clean worktree of main) is for emergencies only.
 - The same `ship` code runs locally and in CI. An app's CI calls the reusable workflows in `darkroomengineering/shipit/.github/workflows` (for example `windows-lane.yml`) through a small caller workflow.
 
 ## 2. The stages
@@ -132,13 +132,20 @@ Existing update feed URLs and update signing keys never change, like bundle IDs.
 - The app and every helper process have an icon and a display name. Helpers must not show as "browsee Helper (GPU)" in Activity Monitor or Screen Time.
 - Store uploads count as failed when Apple returns a rejection, even if the tool exits 0.
 
-## 9. The studio Mac runner
+## 9. The studio Mac runner (darky-body)
 
-Mac and iOS jobs for private repos run on the studio Mac, a GitHub Actions self-hosted runner in the org. Public repos stay on GitHub's hosted runners, which are free for them and keep fork PRs off the studio machine.
+The studio Mac is called **darky-body**: a MacBook Pro (M3 Pro, 36GB) that runs GitHub Actions jobs for the org's private repos. It is not darky, the darkroom-os agent on the DigitalOcean droplet. When a doc, ticket or agent means the Mac, it says darky-body.
 
-- **Two runner instances.** `studio-release` takes only release workflows, so releases never queue behind CI. `studio-ci` takes PR builds and tests.
-- **Workflows pick it through a variable:** `runs-on: ${{ vars.MAC_RUNNER || 'macos-26' }}`. When the studio Mac is offline, an agent may point `MAC_RUNNER` at GitHub's hosted runners for a release that is waiting, then switch it back. CI waits for the studio Mac; switching CI to paid minutes needs a person.
-- **Xcode:** versions are installed side by side and each workflow names the one it needs. Installing or updating Xcode or macOS, and rebooting, is a person's job. Agents may clear build caches and old simulators.
+Every private repo's CI runs there unless a job needs Linux. Public repos stay on GitHub's hosted runners, which are free for them and keep fork PRs off the studio machine.
+
+- **Runners.** One release runner (`studio-release`, label `release`) takes release workflows one at a time, because release runs share the signing keychain and must not edit it at the same time. Several CI runners (`studio-ci`, `darky-body-ci-N`, label `ci`) take everything else in parallel. Every runner also carries the `darky-body` label. `runner/add-runner.sh` adds one more; raise the count only while builds stay faster than on GitHub's runners.
+- **Workflows pick it through org variables**, with the old hosted label as the fallback:
+  - Release jobs: `runs-on: ${{ fromJSON(vars.MAC_RUNNER || '"macos-26"') }}`, with `MAC_RUNNER` set to `["self-hosted","macOS","release"]`.
+  - CI jobs, Linux ones included: `runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}`, with `CI_RUNNER` set to `["self-hosted","macOS","ci"]`.
+  - `runner/convert-workflows.py` rewrites a repo's ubuntu jobs this way and lists the jobs it leaves alone.
+- **Jobs that stay on hosted Linux:** Docker or service containers, Docker-based actions (`appleboy/*`), `apt`, GNU-only commands (`sed -i`, `sha256sum`, `nproc`, `readlink -f`) and Playwright screenshot tests, whose snapshots differ per OS.
+- **When darky-body is offline,** an agent may clear `MAC_RUNNER` (or point it at a hosted label) for a release that is waiting, then set it back. Clearing `CI_RUNNER` moves all CI to paid minutes, so that needs a person.
+- **Tools.** Xcode versions are installed side by side and each workflow names the one it needs. Homebrew provides the basics GitHub's images ship with (gh, jq, Node, git-lfs, uv, Google Chrome). Workflows still install their own language toolchains with setup actions, so the hosted fallback keeps working. Installing or updating Xcode or macOS, and rebooting, is a person's job. Agents may clear build caches and old simulators and add Homebrew tools.
 - **Health:** a weekly job on the runner posts disk space, uptime and installed Xcode versions to Slack.
 - The signing certificate arrives from GitHub secrets during a run, goes into a temporary keychain, and is deleted when the run ends.
 
@@ -152,6 +159,7 @@ Mac and iOS jobs for private repos run on the studio Mac, a GitHub Actions self-
 | Store review rejections | Draft the reply | Send it |
 | Version bump | Propose in the release PR | Merge it |
 | Switch `MAC_RUNNER` to hosted runners | For a waiting release | Anything |
+| Clear `CI_RUNNER` (CI on paid minutes) | No | Yes |
 | New app: App Store record, bundle ID, 1Password items, domains | Prepare everything | Create them |
 | Update Xcode or macOS on the runner | No | Yes |
 
