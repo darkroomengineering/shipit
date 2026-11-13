@@ -248,7 +248,7 @@ function ghRecorder(): Runner & { calls: string[] } {
   };
 }
 
-function windowsSetup(assets: string[], live: string | undefined, overrides: object = {}) {
+function windowsSetup(assets: string[], live: string | Error | undefined, overrides: object = {}) {
   const dir = mkdtempSync(join(tmp, "windows-"));
   const reads: string[] = [];
   return {
@@ -260,7 +260,10 @@ function windowsSetup(assets: string[], live: string | undefined, overrides: obj
       ghOutput: async (argv: string[]) => {
         reads.push(argv.join(" "));
         if (argv[2] === "view") return JSON.stringify({ assets: assets.map((name) => ({ name, size: 1 })) });
-        if (argv.includes("releases.win.json") && live !== undefined) return live;
+        if (argv.includes("releases.win.json")) {
+          if (typeof live === "string") return live;
+          throw live ?? new Error(`${argv.join(" ")} exited 1: no assets match the file pattern`);
+        }
         throw new Error(`unexpected read ${argv.join(" ")}`);
       },
     },
@@ -321,6 +324,13 @@ describe("ship promote windows", () => {
     await expect(runPromoteWindows(config, { ...options, dry: false, runner })).rejects.toThrow(
       "build 508 is not newer than 509 on the win channel",
     );
+    expect(runner.calls).toEqual([]);
+  });
+
+  test("a failed read of the stable feed stops the promote instead of counting as no feed", async () => {
+    const { config, options } = windowsSetup(staged("508"), new Error("gh release download exited 1: HTTP 503"));
+    const runner = ghRecorder();
+    await expect(runPromoteWindows(config, { ...options, dry: false, runner })).rejects.toThrow("HTTP 503");
     expect(runner.calls).toEqual([]);
   });
 

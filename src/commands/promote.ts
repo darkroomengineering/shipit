@@ -140,7 +140,11 @@ export async function runPromoteWindows(config: ShipConfig, options: PromoteOpti
   // live stable feed as absent would let an older staged build overwrite a newer stable one.
   const live = assets.includes(index)
     ? await read(releaseRead(release, index))
-    : await read(releaseRead(release, index)).catch(() => undefined);
+    : await read(releaseRead(release, index)).catch((error: unknown) => {
+        // Only gh's own "no asset by that name" means there is no live feed; any other failure must stop the promote.
+        if (error instanceof Error && /no assets match/i.test(error.message)) return undefined;
+        throw error;
+      });
   const promotion = windowsPromotion(windows, assets, live, options.build);
   const { build, version } = promotion;
   say(`promoting ${version} (${build}) from beta to everyone`);
