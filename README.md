@@ -183,7 +183,7 @@ Every guard runs and prints its result, so one run lists every problem. Then it 
 
 With `"betaChannel": true`, each `ship beta mac` publishes the build with `<sparkle:channel>beta</sparkle:channel>` on its appcast item. Installed copies only see it when the app asks for the channel, so the app must implement `allowedChannels(for:)` in its `SPUUpdaterDelegate` and return `["beta"]` while a "Get beta updates" setting is on (an empty set otherwise). The app needs that setting before `betaChannel` is turned on; until then nobody gets beta builds. Everything else stays as it is: one appcast, one release and the same feed URL.
 
-`ship promote mac` moves the newest beta to everyone. It reads the published appcast from `feedUrl`, removes that item's `<sparkle:channel>` element and leaves every other byte as it was, then uploads the build's DMG under the stable `dmg` name and, last, the edited `appcast.xml`, so a failed upload leaves the build on beta and a second promote retries it. `--build N` promotes build N instead. It refuses when no beta is newer than every build on the default channel, and when the feed carries a feed signature (`SURequireSignedFeed`): editing the feed would invalidate the signature, so signed feeds can't be promoted yet, and `ship beta mac` refuses `betaChannel` on an app with `SURequireSignedFeed`. `--dry-run` reads the feed and prints every command without downloading or uploading anything. `ship release mac` does the same promote after its beta, and a run that finds nothing newer to promote, such as a quiet night, is not a failure. Other platforms have no beta channel yet.
+`ship promote mac` moves the newest beta to everyone. It reads the published appcast from `feedUrl`, removes that item's `<sparkle:channel>` element and leaves every other byte as it was, then uploads the build's DMG under the stable `dmg` name and, last, the edited `appcast.xml`, so a failed upload leaves the build on beta and a second promote retries it. `--build N` promotes build N instead. It refuses when no beta is newer than every build on the default channel, and when the feed carries a feed signature (`SURequireSignedFeed`): editing the feed would invalidate the signature, so signed feeds can't be promoted yet, and `ship beta mac` refuses `betaChannel` on an app with `SURequireSignedFeed`. `--dry-run` reads the feed and prints every command without downloading or uploading anything. `ship release mac` does the same promote after its beta, and a run that finds nothing newer to promote, such as a quiet night, is not a failure. Windows has its own beta channel; see [Windows beta channel](#windows-beta-channel).
 
 ```jsonc
 {
@@ -321,7 +321,7 @@ codigo's block, a Rust app built by `cargo` through its own script:
 
 `ship beta windows` builds a Velopack installer and update feed, signs them, and puts them on a GitHub release. Velopack only builds on Windows, so the lane runs on a GitHub Actions Windows runner:
 
-- **On Windows** (a runner, or `ship ci` there) ship builds in the clean worktree: runs `publish`, installs the pinned `vpk` and runs `vpk pack`, which signs every binary it packs, `Update.exe` and `Setup.exe` with Azure Artifact Signing. It then checks `Get-AuthenticodeSignature` reports `Valid` for `Setup.exe` and for the main exe inside the full package (vpk signs a copy of `publishDir`, so the folder itself stays unsigned), copies `Setup.exe` to a stable `<packId>-x64-setup.exe` and a versioned `<packId>-<version>-<build>-x64-setup.exe`, checks the copies are byte-identical (SHA-256) and still `Valid`, and uploads them with the feed (`releases.win.json` and the `.nupkg`) to `release.tag` in `release.repo`. Packages go up before the stable name and the feed, so the feed never names a file that is not there yet. A release that does not exist yet is created as a draft and published only after every lane passed and the build is tagged. `ship release windows` publishes it again, also when it skips the build because main's head already carries a windows tag, so a beta that tagged but failed before publishing is finished by the next release.
+- **On Windows** (a runner, or `ship ci` there) ship builds in the clean worktree: runs `publish`, installs the pinned `vpk` and runs `vpk pack`, which signs every binary it packs, `Update.exe` and `Setup.exe` with Azure Artifact Signing. It then checks `Get-AuthenticodeSignature` reports `Valid` for `Setup.exe` and for the main exe inside the full package (vpk signs a copy of `publishDir`, so the folder itself stays unsigned), copies `Setup.exe` to a stable `<packId>-x64-setup.exe` and a versioned `<packId>-<version>-<build>-x64-setup.exe`, checks the copies are byte-identical (SHA-256) and still `Valid`, and uploads them with the feed (`releases.win.json` and the `.nupkg`) to `release.tag` in `release.repo`. Packages go up before the stable name and the feed, so the feed never names a file that is not there yet. A release that does not exist yet is created as a draft and published only after every lane passed and the build is tagged. `ship release windows` publishes it again, also when it skips the build because main's head already carries a windows tag, so a beta that tagged but failed before publishing is finished by the next release. With `betaChannel` the build goes to Velopack's `beta` channel instead and the stable name and feed wait for `ship promote windows`; see [Windows beta channel](#windows-beta-channel).
 - **On a Mac** ship dispatches the app's `workflow` with `gh workflow run`, passing the version, build number, commit and a fresh `dispatch_id`, and follows that run with `gh run watch`. The caller's `run-name` must include `inputs.dispatch_id`: ship finds its own run by that id, never by time, and fails if it does not show up within a minute. The runner builds that commit as that build into the same release and leaves tagging and publishing to the Mac run, so every lane of one run shares one build number and one release.
 - **`--dry-run`** on a Mac prints every command the dispatch and the runner would run and calls nothing remote. On Windows it builds and packs without signing and prints the uploads it skipped.
 
@@ -336,7 +336,8 @@ Velopack's version is `<version>-build.<build>`, so every build is an update eve
   "packTitle": "Mesinyer",                // default packId
   "mainExe": "Mesinyer.Windows.exe",
   "runtime": "win-x64",                   // or win-arm64, win-x86
-  "channel": "win",                       // default win
+  "channel": "win",                       // default win; the channel everyone gets
+  "betaChannel": false,                   // default; true sends each build to the beta channel, see below
   "vpk": "1.2.161",                       // same version as the Velopack NuGet package in the app
   "workflow": "ship-windows.yml",         // default; the caller workflow below
   "release": { "repo": "darkroomengineering/mesinyer-releases", "tag": "rolling" },
@@ -387,6 +388,23 @@ jobs:
 
 shipit is private, so its Actions settings must allow access from the organization's repositories, and the runner checks it out with `shipit-token`. Run by hand with no inputs, the workflow is a whole `ship beta windows` on the runner: it picks the build number, tags and publishes. With `dry-run` it runs `ship ci windows`. Packages are kept as a run artifact either way.
 
+### Windows beta channel
+
+With `"betaChannel": true`, each `ship beta windows` packs the build twice, into two fresh folders: once on Velopack's `beta` channel and once on `channel`, the channel everyone gets. Velopack writes the channel into each package, and an installed copy follows the channel of the package it installed, so a beta package in the stable feed would quietly move everyone to beta. The stable channel gets its own pack instead. Both packs go to the same release and tag:
+
+- The beta feed (`releases.beta.json` and its legacy `RELEASES` file) replaces the previous one. The beta pack's `Setup.exe` is not uploaded: there is no separate beta download, and testers switch channel inside the app.
+- Both packs' packages and the versioned installer go up next to the older builds' files.
+- The stable pack's feed files go up under per-build names such as `Mesinyer-508-staged-releases.win.json`, which nothing reads.
+- The stable installer name and `releases.<channel>.json` stay as they are.
+
+Packages, the versioned installer and staged files never overwrite an existing asset, because a feed names each package by its hash, so a re-run of the same build number fails instead of changing a published file.
+
+The app needs a "Get beta updates" setting before `betaChannel` is turned on. The setting must always give `UpdateManager` an explicit channel, `ExplicitChannel = getBetaUpdates ? "beta" : "win"` (the stable `channel`, never null), together with `AllowVersionDowngrade = true`, as Velopack's "Switching channels" docs describe. A null channel keeps a copy on the channel it last installed, so a tester who turns the setting off would stay on beta; the downgrade flag lets them move back to a stable build older than their beta.
+
+`ship promote windows` moves the newest staged build to everyone. It lists the release's assets, reads the live `releases.<channel>.json`, and takes the newest build that has staged files, or build N with `--build N`. It refuses when that build is not newer than every build in the live stable feed, and when the build's staged `releases.<channel>.json`, its full package or its versioned installer is not on the release. It downloads the staged files and the versioned installer, gives them their stable names, and uploads the stable installer name first, then the `RELEASES` file and the other feed files, and `releases.<channel>.json` last, so a failed upload leaves the stable channel as it was and a second promote retries it. It only calls `gh`, so it runs on any OS. `--dry-run` reads the release and prints every command without downloading or uploading anything. `ship release windows` publishes the release and then runs the same promote; a run that finds nothing newer to promote, such as a quiet night, is not a failure.
+
+The promoted package is the build's own stable pack, not the beta package testers ran. Both come from the same `publish` output, but with signing on each pack is signed separately, so the two are not byte-identical. Staged files stay on the release after promote until the release retention work (INC-1047) deletes old builds.
+
 ## Credentials
 
 App Store Connect, from the `credentials` file or the environment:
@@ -416,7 +434,7 @@ The agent runs `ship nightly` at 03:00 with a PATH that includes `/opt/homebrew/
 ## Other commands
 
 - `ship ci`: for CI runners; on Windows it builds the windows lane (see [Windows](#windows)). It refuses unless the checkout is clean and `HEAD` is `origin/main` after a fetch, records that commit, runs `gates`, builds every lane from that commit as a dry run (the mac lane prints its plan), and checks `origin/main` has not moved before it would publish. Publishing is not wired in yet, so it releases nothing.
-- `ship promote [mac] [--dry-run] [--build N]`: moves the newest Mac beta, or build N, to everyone; see [Beta channel](#beta-channel).
+- `ship promote [mac|windows] [--dry-run] [--build N]`: moves the newest beta, or build N, to everyone; with no platform it promotes mac. See [Beta channel](#beta-channel) and [Windows beta channel](#windows-beta-channel).
 - `ship update "what changed"`: publishes main as an over-the-air update for Expo apps; see [Over-the-air updates](#over-the-air-updates).
 - `ship status`: the latest TestFlight build and its beta review state, App Store version states, and Play internal and production versions.
 - `ship doctor`: tools (`xcodebuild`, `xcodegen` or `pod`, `bun`, `java` for Android), credentials, the key file, the App Store Connect app, each external group, the Play key, and for Expo apps a warning when `ios/.xcode.env.local` points `NODE_BINARY` at a node that no longer exists.

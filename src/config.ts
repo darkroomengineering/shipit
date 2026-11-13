@@ -191,7 +191,14 @@ export interface WindowsConfig extends TargetConfig {
   packTitle: string;
   mainExe: string;
   runtime: "win-x64" | "win-arm64" | "win-x86";
+  /** Velopack channel everyone gets. */
   channel: string;
+  /**
+   * Publish each build to Velopack's `beta` channel on the same release instead of to everyone; `ship promote
+   * windows` moves the build to `channel`. Off by default: the app first needs a "Get beta updates" setting that
+   * always sets an explicit channel, `beta` or `channel`, with AllowVersionDowngrade on.
+   */
+  betaChannel: boolean;
   /** vpk version; keep it equal to the app's Velopack NuGet package. */
   vpk: string;
   /** The app's workflow_dispatch workflow that calls shipit's windows-lane.yml. */
@@ -496,6 +503,10 @@ const parseWindows = (raw: Raw, errors: string[]): WindowsConfig =>
       if (vpk && !/^\d+\.\d+\.\d+$/.test(vpk)) reader.errors.push('windows.vpk: expected a version such as "1.2.161"');
       const packTitle = reader.optionalString("packTitle") ?? packId;
       if (packTitle && !NO_QUOTES.test(packTitle)) reader.errors.push("windows.packTitle: must not contain quotes");
+      const channel = reader.optionalString("channel") ?? "win";
+      const betaChannel = reader.boolean("betaChannel", false);
+      if (betaChannel && channel === "beta")
+        reader.errors.push('windows.channel: "beta" is the beta channel betaChannel publishes to; use another name');
       return {
         publish: reader.string("publish"),
         publishDir: reader.string("publishDir"),
@@ -503,7 +514,8 @@ const parseWindows = (raw: Raw, errors: string[]): WindowsConfig =>
         packTitle,
         mainExe: reader.string("mainExe"),
         runtime: runtime as WindowsConfig["runtime"],
-        channel: reader.optionalString("channel") ?? "win",
+        channel,
+        betaChannel,
         vpk,
         workflow: reader.optionalString("workflow") ?? "ship-windows.yml",
         release: parseWindowsRelease(reader.object("release"), errors),
@@ -518,6 +530,7 @@ const parseWindows = (raw: Raw, errors: string[]): WindowsConfig =>
       "mainExe",
       "runtime",
       "channel",
+      "betaChannel",
       "vpk",
       "workflow",
       "release",

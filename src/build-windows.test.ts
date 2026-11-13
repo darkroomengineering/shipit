@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  BETA_CHANNEL,
   findRun,
   githubRepo,
   installerNames,
@@ -10,6 +11,8 @@ import {
   packVersion,
   pinnedRun,
   signTemplate,
+  stagedName,
+  uploadSets,
   type WindowsRun,
   windowsPlan,
 } from "./build-windows.ts";
@@ -68,6 +71,7 @@ describe("windows in ship.json", () => {
       mainExe: "Mesinyer.Windows.exe",
       runtime: "win-x64",
       channel: "win",
+      betaChannel: false,
       vpk: "1.2.161",
       workflow: "ship-windows.yml",
       release: { repo: "darkroomengineering/mesinyer-releases", tag: "rolling" },
@@ -104,6 +108,13 @@ describe("windows in ship.json", () => {
     rejects({ ...minimal, signing: { ...signing, publisher: 'x" & calc' } }, "windows.signing.publisher: must not");
     rejects({ ...minimal, signing: { ...signing, password: "x" } }, "windows.signing.password: unknown key");
     rejects({ ...minimal, installer: "msi" }, "windows.installer: unknown key");
+    rejects({ ...minimal, betaChannel: "yes" }, "windows.betaChannel: expected true or false");
+    rejects({ ...minimal, betaChannel: true, channel: "beta" }, 'windows.channel: "beta" is the beta channel');
+  });
+
+  test("betaChannel opts the app into Velopack's beta channel and keeps channel as the stable one", () => {
+    expect(parse({ ...minimal, betaChannel: true }).windows).toMatchObject({ betaChannel: true, channel: "win" });
+    expect(parse({ ...minimal, channel: "beta" }).windows?.channel).toBe("beta");
   });
 
   test("windows has a lane", () => {
@@ -196,6 +207,126 @@ describe("the dry-run plan", () => {
     const own = parse({ ...minimal, release: { repo: "darkroomengineering/demo", tag: "rolling" } });
     const plan = windowsPlan(run(own), "darkroomengineering/demo", "darwin");
     expect(plan.find((line) => line.includes("gh release create"))).toContain(`--target ${"a".repeat(40)}`);
+  });
+});
+
+describe("a beta-channel build", () => {
+  const beta = parse({ ...minimal, betaChannel: true, signing });
+  const out = "/runner-temp/shipit-windows-202611121530";
+  const plan = () => windowsPlan(run(beta), "darkroomengineering/demo", "win32");
+
+  test("packs twice into fresh folders, the stable channel and beta, and verifies both when signing", () => {
+    const packs = plan().filter((line) => line.includes(" pack "));
+    expect(packs).toHaveLength(2);
+    expect(packs[0]).toContain(`--channel win --noPortable --outputDir ${out}/feed --signTemplate`);
+    expect(packs[1]).toContain(`--channel beta --noPortable --outputDir ${out}/feed-beta --signTemplate`);
+    expect(plan().filter((line) => line.includes("Get-AuthenticodeSignature"))).toEqual(
+      [
+        `${out}/feed/Demo-win-Setup.exe`,
+        `${out}/verify/lib/app/Demo.exe`,
+        `${out}/feed-beta/Demo-beta-Setup.exe`,
+        `${out}/verify-beta/lib/app/Demo.exe`,
+      ].map(
+        (file) =>
+          `pwsh -NoProfile -NonInteractive -Command "(Get-AuthenticodeSignature -LiteralPath '${file}').Status"   must print Valid`,
+      ),
+    );
+    expect(plan()).toContain(
+      `tar -xf ${out}/feed-beta/Demo-0.1.0-build.202611121530-beta-full.nupkg -C ${out}/verify-beta lib/app/Demo.exe`,
+    );
+  });
+
+  test("uploads packages and the staged stable feed without clobbering, then only the beta feed", () => {
+    const uploads = plan().filter((line) => line.startsWith("gh release upload"));
+    expect(uploads).toEqual([
+      `gh release upload rolling ${out}/installers/Demo-0.1.0-202611121530-x64-setup.exe "${out}/feed/*.nupkg" "${out}/feed-beta/*.nupkg" "${out}/staged/*" --repo darkroomengineering/demo-releases`,
+      `gh release upload rolling ${out}/feed-beta/releases.beta.json --clobber --repo darkroomengineering/demo-releases   plus the other files vpk wrote in ${out}/feed-beta besides packages and Setup.exe; the stable installer name and feed wait for ship promote windows`,
+    ]);
+    expect(plan()).toContain(
+      `copy every file in ${out}/feed besides packages and Setup.exe to ${out}/staged/Demo-202611121530-staged-<name>, for ship promote windows`,
+    );
+  });
+});
+
+describe("the upload sets", () => {
+  const version = "0.1.0";
+  const build = "508";
+  const folder = (name: string, files: string[]) => {
+    const dir = join(tmp, name);
+    mkdirSync(dir, { recursive: true });
+    for (const file of files) writeFileSync(join(dir, file), `${name}/${file}`);
+    return dir;
+  };
+  const stableFiles = [
+    "Mesinyer-0.1.0-build.508-full.nupkg",
+    "Mesinyer-win-Setup.exe",
+    "releases.win.json",
+    "RELEASES",
+    "assets.win.json",
+  ];
+  const betaFiles = [
+    "Mesinyer-0.1.0-build.508-beta-full.nupkg",
+    `Mesinyer-${BETA_CHANNEL}-Setup.exe`,
+    "releases.beta.json",
+    "RELEASES-beta",
+    "assets.beta.json",
+  ];
+  const names = installerNames(windowsOf(mesinyer), version, build);
+  const sorted = (files: string[]) => files.map((file) => file.slice(tmp.length + 1)).sort();
+
+  test("without betaChannel: the stable installer name and stable feed, as before", () => {
+    const sets = uploadSets(windowsOf(mesinyer), build, {
+      feed: folder("plain/feed", stableFiles),
+      alias: join(tmp, "plain/installers", names.alias),
+      versioned: join(tmp, "plain/installers", names.versioned),
+      staged: join(tmp, "plain/staged"),
+    });
+    expect(sorted(sets.immutable)).toEqual([
+      "plain/feed/Mesinyer-0.1.0-build.508-full.nupkg",
+      "plain/installers/Mesinyer-0.1.0-508-x64-setup.exe",
+    ]);
+    expect(sorted(sets.mutable)).toEqual([
+      "plain/feed/RELEASES",
+      "plain/feed/assets.win.json",
+      "plain/feed/releases.win.json",
+      "plain/installers/Mesinyer-x64-setup.exe",
+    ]);
+    expect(existsSync(join(tmp, "plain/staged"))).toBe(false);
+  });
+
+  test("with betaChannel: both channels' packages and the staged stable feed, then the beta feed alone", () => {
+    const windows = windowsOf(
+      parseConfig(fixture.replace('"channel": "win",', '"channel": "win", "betaChannel": true,'), "/a"),
+    );
+    expect(windows.betaChannel).toBe(true);
+    const staged = join(tmp, "beta/staged");
+    const sets = uploadSets(windows, build, {
+      feed: folder("beta/feed", stableFiles),
+      betaFeed: folder("beta/feed-beta", betaFiles),
+      alias: join(tmp, "beta/installers", names.alias),
+      versioned: join(tmp, "beta/installers", names.versioned),
+      staged,
+    });
+    expect(sorted(sets.immutable)).toEqual([
+      "beta/feed-beta/Mesinyer-0.1.0-build.508-beta-full.nupkg",
+      "beta/feed/Mesinyer-0.1.0-build.508-full.nupkg",
+      "beta/installers/Mesinyer-0.1.0-508-x64-setup.exe",
+      "beta/staged/Mesinyer-508-staged-RELEASES",
+      "beta/staged/Mesinyer-508-staged-assets.win.json",
+      "beta/staged/Mesinyer-508-staged-releases.win.json",
+    ]);
+    expect(sorted(sets.mutable)).toEqual([
+      "beta/feed-beta/RELEASES-beta",
+      "beta/feed-beta/assets.beta.json",
+      "beta/feed-beta/releases.beta.json",
+    ]);
+    const all = [...sets.immutable, ...sets.mutable].map((file) => file.slice(file.lastIndexOf("/") + 1));
+    expect(all).not.toContain(names.alias);
+    expect(all).not.toContain("releases.win.json");
+    expect(all.filter((name) => name.endsWith("-Setup.exe"))).toEqual([]);
+    expect(readFileSync(join(staged, stagedName(windows, build, "releases.win.json")), "utf8")).toBe(
+      "beta/feed/releases.win.json",
+    );
   });
 });
 
@@ -386,5 +517,111 @@ describe("ship release windows", () => {
     expect(readFileSync(ghLog, "utf8")).toBe(
       "release edit rolling --draft=false --repo darkroomengineering/mesinyer-releases\n",
     );
+  });
+
+  /** Runs `ship release windows` with betaChannel on and a fake gh that serves `assets` and the live stable feed. */
+  async function releaseBeta(name: string, assets: string[], liveBuild: string) {
+    const { config } = await repo(name);
+    const head = await git(config.root, "rev-parse", "HEAD");
+    await git(
+      config.root,
+      "-c",
+      "tag.gpgsign=false",
+      "tag",
+      "-a",
+      "v0.1.0-1",
+      head,
+      "-m",
+      "Mesinyer 0.1.0 build 1 (windows)",
+    );
+    await git(config.root, "push", "-q", "origin", "v0.1.0-1");
+    const bin = join(tmp, `${name}-bin`);
+    const ghLog = join(tmp, `${name}-gh.log`);
+    mkdirSync(bin);
+    writeFileSync(
+      join(tmp, `${name}-assets.json`),
+      JSON.stringify({ assets: assets.map((asset) => ({ name: asset })) }),
+    );
+    writeFileSync(
+      join(tmp, `${name}-live.json`),
+      JSON.stringify({ Assets: [{ PackageId: "Mesinyer", Version: `0.1.0-build.${liveBuild}`, Type: "Full" }] }),
+    );
+    writeFileSync(
+      join(bin, "gh"),
+      `#!/bin/sh
+echo "$*" >> "${ghLog}"
+[ "$1 $2" = "release view" ] && exec cat "${tmp}/${name}-assets.json"
+[ "$1 $2" = "release download" ] || exit 0
+prev=""; dir=""
+for arg in "$@"; do
+  [ "$prev" = "--output" ] && exec cat "${tmp}/${name}-live.json"
+  [ "$prev" = "--dir" ] && dir="$arg"
+  prev="$arg"
+done
+for arg in "$@"; do
+  [ "$prev" = "--pattern" ] && echo "$arg" > "$dir/$arg"
+  prev="$arg"
+done
+exit 0
+`,
+    );
+    chmodSync(join(bin, "gh"), 0o755);
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await release(
+        { ...config, windows: { ...windowsOf(config), betaChannel: true } },
+        { platform: "windows", dry: false },
+      );
+    } finally {
+      process.env.PATH = path;
+      logSpy.mockRestore();
+    }
+    return readFileSync(ghLog, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => line.replace(/ --repo darkroomengineering\/mesinyer-releases$/, ""));
+  }
+  const staged = (build: string) => [
+    `Mesinyer-0.1.0-${build}-x64-setup.exe`,
+    `Mesinyer-0.1.0-build.${build}-full.nupkg`,
+    `Mesinyer-0.1.0-build.${build}-beta-full.nupkg`,
+    `Mesinyer-${build}-staged-RELEASES`,
+    `Mesinyer-${build}-staged-releases.win.json`,
+  ];
+
+  test("with betaChannel: publishes the release, then promotes the newest staged build", async () => {
+    const calls = await releaseBeta(
+      "release-beta",
+      ["Mesinyer-x64-setup.exe", "releases.win.json", ...staged("7"), ...staged("8")],
+      "7",
+    );
+    expect(calls.slice(0, 4)).toEqual([
+      "release edit rolling --draft=false",
+      "release view rolling --json assets",
+      "release download rolling --pattern releases.win.json --output -",
+      expect.stringMatching(
+        /^release download rolling --pattern Mesinyer-8-staged-RELEASES --pattern Mesinyer-8-staged-releases\.win\.json --pattern Mesinyer-0\.1\.0-8-x64-setup\.exe --dir \S+\/download$/,
+      ),
+    ]);
+    expect(calls.slice(4).map((line) => line.replace(/\S+\//g, ""))).toEqual([
+      "release upload rolling Mesinyer-x64-setup.exe --clobber",
+      "release upload rolling RELEASES --clobber",
+      "release upload rolling releases.win.json --clobber",
+    ]);
+  });
+
+  test("with betaChannel and nothing newer to promote, the release still succeeds and uploads nothing", async () => {
+    const calls = await releaseBeta(
+      "release-quiet",
+      ["Mesinyer-x64-setup.exe", "releases.win.json", ...staged("7")],
+      "7",
+    );
+    expect(calls).toEqual([
+      "release edit rolling --draft=false",
+      "release view rolling --json assets",
+      "release download rolling --pattern releases.win.json --output -",
+    ]);
   });
 });

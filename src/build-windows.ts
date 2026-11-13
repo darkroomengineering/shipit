@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Platform, ShipConfig, WindowsConfig, WindowsRelease } from "./config.ts";
 import { git, mainRef } from "./git.ts";
 import { log, run, warn } from "./log.ts";
+import { NothingToPromoteError } from "./sparkle.ts";
 
 /** The `sign` CLI version Programa's release workflow installs. */
 const SIGN_VERSION = "1.1.5";
@@ -34,6 +35,23 @@ export function installerNames(windows: WindowsConfig, version: string, build: s
     versioned: `${windows.packId}-${version}-${build}-${arch}-setup.exe`,
   };
 }
+
+/** The Velopack channel `betaChannel` publishes every build to; `windows.channel` is the one everyone gets. */
+export const BETA_CHANNEL = "beta";
+
+/** vpk's full package name: the channel is left out for "win", Windows' default channel. */
+export const fullPackageName = (windows: WindowsConfig, version: string, build: string, channel: string) =>
+  `${windows.packId}-${packVersion(version, build)}${channel === "win" ? "" : `-${channel}`}-full.nupkg`;
+
+/** The update feed index installed copies on `channel` read. */
+export const feedIndex = (channel: string) => `releases.${channel}.json`;
+
+/**
+ * A stable feed file a beta-channel build keeps on the release under a per-build name, such as
+ * `Mesinyer-508-staged-releases.win.json`. Nothing reads it until `ship promote windows` uploads it under `name`.
+ */
+export const stagedName = (windows: WindowsConfig, build: string, name: string) =>
+  `${windows.packId}-${build}-staged-${name}`;
 
 /** Where a run's packages land; on a runner, under RUNNER_TEMP so the workflow can keep them as an artifact. */
 export const outputDir = (build: string, env = process.env) =>
@@ -96,7 +114,7 @@ export function signTemplate(windows: WindowsConfig): string | undefined {
   ].join(" ");
 }
 
-export function packCommand(r: WindowsRun, feedDir: string, sign: boolean): string[] {
+export function packCommand(r: WindowsRun, feedDir: string, sign: boolean, channel: string): string[] {
   const { windows } = r;
   const template = sign ? signTemplate(windows) : undefined;
   return [
@@ -115,7 +133,7 @@ export function packCommand(r: WindowsRun, feedDir: string, sign: boolean): stri
     "--runtime",
     windows.runtime,
     "--channel",
-    windows.channel,
+    channel,
     "--noPortable",
     "--outputDir",
     feedDir,
@@ -125,9 +143,15 @@ export function packCommand(r: WindowsRun, feedDir: string, sign: boolean): stri
 
 const gh = (release: WindowsRelease, ...args: string[]) => ["gh", "release", ...args, "--repo", release.repo];
 export const releaseView = (release: WindowsRelease) => gh(release, "view", release.tag, "--json", "isDraft");
-export const releaseUpload = (release: WindowsRelease, files: string[]) =>
-  gh(release, "upload", release.tag, ...files, "--clobber");
+export const releaseUpload = (release: WindowsRelease, files: string[], clobber = true) =>
+  gh(release, "upload", release.tag, ...files, ...(clobber ? ["--clobber"] : []));
 export const releasePublish = (release: WindowsRelease) => gh(release, "edit", release.tag, "--draft=false");
+export const releaseAssets = (release: WindowsRelease) => gh(release, "view", release.tag, "--json", "assets");
+/** Prints one asset to stdout. */
+export const releaseRead = (release: WindowsRelease, asset: string) =>
+  gh(release, "download", release.tag, "--pattern", asset, "--output", "-");
+export const releaseDownload = (release: WindowsRelease, assets: string[], dir: string) =>
+  gh(release, "download", release.tag, ...assets.flatMap((asset) => ["--pattern", asset]), "--dir", dir);
 function releaseCreate(r: WindowsRun, sameRepo: boolean) {
   const { release } = r.windows;
   return gh(
@@ -195,30 +219,54 @@ export function windowsPlan(r: WindowsRun, repo: string, platform: NodeJS.Platfo
   const sign = Boolean(windows.signing);
   const out = outputDir(r.build);
   const feed = join(out, "feed");
+  const betaFeed = join(out, "feed-beta");
   const { alias, versioned } = installerNames(windows, r.version, r.build);
   const setup = join(feed, `${windows.packId}-${windows.channel}-Setup.exe`);
-  const nupkg = join(
-    feed,
-    `${windows.packId}-${packVersion(r.version, r.build)}${windows.channel === "win" ? "" : `-${windows.channel}`}-full.nupkg`,
-  );
-  const verify = join(out, "verify");
-  const here = [
-    `${show(pwsh(windows.publish))}   (in ${join(r.worktree, windows.dir)})`,
-    show(toolInstall("vpk", windows.vpk)),
-    ...(sign ? [show(toolInstall("sign", SIGN_VERSION)), show(AZ_ACCOUNT)] : [UNSIGNED]),
-    show(packCommand(r, feed, sign)),
+  const packSteps = (dir: string, channel: string, verify: string) => [
+    show(packCommand(r, dir, sign, channel)),
     ...(sign
       ? [
-          show(extractMainExe(nupkg, windows.mainExe, verify)),
-          ...[setup, join(verify, "lib", "app", windows.mainExe)].map(
+          show(
+            extractMainExe(join(dir, fullPackageName(windows, r.version, r.build, channel)), windows.mainExe, verify),
+          ),
+          ...[join(dir, `${windows.packId}-${channel}-Setup.exe`), join(verify, "lib", "app", windows.mainExe)].map(
             (file) => `${show(authenticode(file))}   must print Valid`,
           ),
         ]
       : []),
-    `copy ${setup} to ${join(out, "installers", alias)} and ${join(out, "installers", versioned)}; their SHA-256 must match${sign ? " and both must be Valid" : ""}`,
-    `${show(releaseView(windows.release))}   then, when the release does not exist yet: ${show(releaseCreate(r, repo === windows.release.repo))}`,
-    show(releaseUpload(windows.release, [join(out, "installers", versioned), join(feed, "*.nupkg")])),
-    `${show(releaseUpload(windows.release, [join(out, "installers", alias), join(feed, `releases.${windows.channel}.json`)]))}   plus the other files vpk wrote besides packages and Setup.exe`,
+  ];
+  const copyInstallers = `copy ${setup} to ${join(out, "installers", alias)} and ${join(out, "installers", versioned)}; their SHA-256 must match${sign ? " and both must be Valid" : ""}`;
+  const here = [
+    `${show(pwsh(windows.publish))}   (in ${join(r.worktree, windows.dir)})`,
+    show(toolInstall("vpk", windows.vpk)),
+    ...(sign ? [show(toolInstall("sign", SIGN_VERSION)), show(AZ_ACCOUNT)] : [UNSIGNED]),
+    ...packSteps(feed, windows.channel, join(out, "verify")),
+    ...(windows.betaChannel
+      ? [
+          ...packSteps(betaFeed, BETA_CHANNEL, join(out, "verify-beta")),
+          copyInstallers,
+          `copy every file in ${feed} besides packages and Setup.exe to ${join(out, "staged", stagedName(windows, r.build, "<name>"))}, for ship promote windows`,
+          `${show(releaseView(windows.release))}   then, when the release does not exist yet: ${show(releaseCreate(r, repo === windows.release.repo))}`,
+          show(
+            releaseUpload(
+              windows.release,
+              [
+                join(out, "installers", versioned),
+                join(feed, "*.nupkg"),
+                join(betaFeed, "*.nupkg"),
+                join(out, "staged", "*"),
+              ],
+              false,
+            ),
+          ),
+          `${show(releaseUpload(windows.release, [join(betaFeed, feedIndex(BETA_CHANNEL))]))}   plus the other files vpk wrote in ${betaFeed} besides packages and Setup.exe; the stable installer name and feed wait for ship promote windows`,
+        ]
+      : [
+          copyInstallers,
+          `${show(releaseView(windows.release))}   then, when the release does not exist yet: ${show(releaseCreate(r, repo === windows.release.repo))}`,
+          show(releaseUpload(windows.release, [join(out, "installers", versioned), join(feed, "*.nupkg")])),
+          `${show(releaseUpload(windows.release, [join(out, "installers", alias), join(feed, feedIndex(windows.channel))]))}   plus the other files vpk wrote besides packages and Setup.exe`,
+        ]),
   ];
   if (buildsHere(platform)) return here;
   return [
@@ -278,11 +326,76 @@ async function assertValid(files: string[]) {
   }
 }
 
-interface Packaged {
-  /** Upload before the mutable files, so the feed never names a package that is not there yet. */
+export interface Packaged {
+  /**
+   * Upload before the mutable files, so the feed never names a package that is not there yet. A beta-channel build
+   * adds its beta packages and the staged copies of its stable feed, and never overwrites any of them.
+   */
   immutable: string[];
-  /** The stable installer name and the feed files installed copies read. */
+  /** The feed files installed copies read and, without betaChannel, the stable installer name. */
   mutable: string[];
+}
+
+/** The pack folders and installer copies of one build, and where a beta-channel build stages its stable feed. */
+export interface PackOutput {
+  feed: string;
+  /** The `beta` pack's folder, when betaChannel is on. */
+  betaFeed?: string;
+  alias: string;
+  versioned: string;
+  staged: string;
+}
+
+/**
+ * What a build uploads. Without betaChannel everyone gets it at once: the stable installer name and the stable
+ * feed. With betaChannel only the beta feed changes; the stable feed is copied under per-build `stagedName`s for
+ * `ship promote windows`, and Setup.exe of the beta pack is never uploaded, since testers switch channel in the app.
+ */
+export function uploadSets(windows: WindowsConfig, build: string, output: PackOutput): Packaged {
+  const listed = (dir: string) =>
+    readdirSync(dir)
+      .filter((name) => !name.endsWith("-Setup.exe"))
+      .map((name) => join(dir, name));
+  const packages = (files: string[]) => files.filter((file) => file.endsWith(".nupkg"));
+  const feedFiles = (files: string[]) => files.filter((file) => !file.endsWith(".nupkg"));
+  const stable = listed(output.feed);
+  if (!output.betaFeed)
+    return {
+      immutable: [output.versioned, ...packages(stable)],
+      mutable: [output.alias, ...feedFiles(stable)],
+    };
+  mkdirSync(output.staged, { recursive: true });
+  const staged = feedFiles(stable).map((file) => {
+    const copy = join(output.staged, stagedName(windows, build, basename(file)));
+    copyFileSync(file, copy);
+    return copy;
+  });
+  const beta = listed(output.betaFeed);
+  return {
+    immutable: [...packages(beta), ...packages(stable), output.versioned, ...staged],
+    mutable: feedFiles(beta),
+  };
+}
+
+/** Packs into a fresh `feed` folder on `channel` and, when signing, checks Setup.exe and the main exe are Valid. */
+async function packInto(r: WindowsRun, feed: string, channel: string, sign: boolean, verify: string) {
+  mkdirSync(feed, { recursive: true });
+  const pack = packCommand(r, feed, sign, channel);
+  log(`== ${show(pack)}`);
+  await run(pack);
+
+  const setups = readdirSync(feed).filter((name) => name.endsWith("-Setup.exe"));
+  if (setups.length !== 1 || !setups[0]) throw new Error(`expected one *-Setup.exe in ${feed}, found ${setups.length}`);
+  const setup = join(feed, setups[0]);
+  if (sign) {
+    const nupkgs = readdirSync(feed).filter((name) => name.endsWith("-full.nupkg"));
+    if (nupkgs.length !== 1 || !nupkgs[0])
+      throw new Error(`expected one *-full.nupkg in ${feed}, found ${nupkgs.length}`);
+    mkdirSync(verify);
+    await run(extractMainExe(join(feed, nupkgs[0]), r.windows.mainExe, verify), { capture: true });
+    await assertValid([setup, join(verify, "lib", "app", r.windows.mainExe)]);
+  }
+  return setup;
 }
 
 async function buildHere(r: WindowsRun): Promise<Packaged> {
@@ -310,24 +423,11 @@ async function buildHere(r: WindowsRun): Promise<Packaged> {
   const feed = join(out, "feed");
   const installers = join(out, "installers");
   rmSync(out, { recursive: true, force: true });
-  mkdirSync(feed, { recursive: true });
-  mkdirSync(installers);
-  const pack = packCommand(r, feed, sign);
-  log(`== ${show(pack)}`);
-  await run(pack);
-
-  const setups = readdirSync(feed).filter((name) => name.endsWith("-Setup.exe"));
-  if (setups.length !== 1 || !setups[0]) throw new Error(`expected one *-Setup.exe in ${feed}, found ${setups.length}`);
-  const setup = join(feed, setups[0]);
-  if (sign) {
-    const nupkgs = readdirSync(feed).filter((name) => name.endsWith("-full.nupkg"));
-    if (nupkgs.length !== 1 || !nupkgs[0])
-      throw new Error(`expected one *-full.nupkg in ${feed}, found ${nupkgs.length}`);
-    const verify = join(out, "verify");
-    mkdirSync(verify);
-    await run(extractMainExe(join(feed, nupkgs[0]), windows.mainExe, verify), { capture: true });
-    await assertValid([setup, join(verify, "lib", "app", windows.mainExe)]);
-  }
+  mkdirSync(installers, { recursive: true });
+  const setup = await packInto(r, feed, windows.channel, sign, join(out, "verify"));
+  // Each channel packs into its own folder, so each holds one Setup.exe and only that channel's feed.
+  const betaFeed = windows.betaChannel ? join(out, "feed-beta") : undefined;
+  if (betaFeed) await packInto(r, betaFeed, BETA_CHANNEL, sign, join(out, "verify-beta"));
 
   // Copies of the signed file: each signing call gets a fresh certificate and timestamp, so two signed copies would differ.
   const names = installerNames(windows, r.version, r.build);
@@ -337,23 +437,21 @@ async function buildHere(r: WindowsRun): Promise<Packaged> {
   copyFileSync(setup, versioned);
   const hash = sha256(setup);
   if (sha256(alias) !== hash || sha256(versioned) !== hash)
-    throw new Error(`${names.alias} and ${names.versioned} are not byte-identical to ${setups[0]}`);
+    throw new Error(`${names.alias} and ${names.versioned} are not byte-identical to ${basename(setup)}`);
   if (sign) await assertValid([alias, versioned]);
   log(`windows: ${names.versioned} sha256 ${hash}${sign ? ", Authenticode Valid" : " (UNSIGNED)"}`);
 
-  const feedFiles = readdirSync(feed)
-    .filter((name) => name !== setups[0])
-    .map((name) => join(feed, name));
-  return {
-    immutable: [versioned, ...feedFiles.filter((file) => file.endsWith(".nupkg"))],
-    mutable: [alias, ...feedFiles.filter((file) => !file.endsWith(".nupkg"))],
-  };
+  return uploadSets(windows, r.build, { feed, betaFeed, alias, versioned, staged: join(out, "staged") });
 }
 
 async function upload(r: WindowsRun, packaged: Packaged) {
   const { release } = r.windows;
   const create = releaseCreate(r, (await githubRepo(r.config.root)) === release.repo);
-  const uploads = [releaseUpload(release, packaged.immutable), releaseUpload(release, packaged.mutable)];
+  // A beta-channel build's packages and staged feed never change once up: a feed names each package by its hash.
+  const uploads = [
+    releaseUpload(release, packaged.immutable, !r.windows.betaChannel),
+    releaseUpload(release, packaged.mutable),
+  ];
   if (r.dry) {
     for (const command of [releaseView(release), create, ...uploads]) log(`dry run: skipped ${show(command)}`);
     return;
@@ -367,6 +465,110 @@ async function upload(r: WindowsRun, packaged: Packaged) {
   );
   for (const command of exists ? uploads : [create, ...uploads]) await run(command, { capture: true });
   log(`windows: uploaded to ${release.repo} release ${release.tag}`);
+}
+
+/** Asset names from `gh release view --json assets`. */
+export function assetNames(json: string): string[] {
+  const { assets } = JSON.parse(json) as { assets?: unknown };
+  if (!Array.isArray(assets)) throw new Error("gh release view --json assets printed no assets list");
+  return assets.flatMap((asset) =>
+    typeof asset === "object" && asset !== null && typeof (asset as { name?: unknown }).name === "string"
+      ? [(asset as { name: string }).name]
+      : [],
+  );
+}
+
+/** The newest build a Velopack feed index names in a `<version>-build.<build>` version; undefined when none. */
+export function feedBuild(index: string): bigint | undefined {
+  const { Assets } = JSON.parse(index) as { Assets?: unknown };
+  if (!Array.isArray(Assets)) return undefined;
+  let newest: bigint | undefined;
+  for (const asset of Assets) {
+    const version = typeof asset === "object" && asset !== null ? (asset as { Version?: unknown }).Version : undefined;
+    const build = typeof version === "string" ? /-build\.(\d+)$/.exec(version)?.[1] : undefined;
+    if (build !== undefined && (newest === undefined || BigInt(build) > newest)) newest = BigInt(build);
+  }
+  return newest;
+}
+
+/** One staged build `ship promote windows` publishes to the stable channel. */
+export interface WindowsPromotion {
+  build: string;
+  version: string;
+  /** Each staged asset and the stable feed name it goes up under. */
+  staged: { asset: string; name: string }[];
+  /** The build's versioned installer asset, which goes up again under the stable installer name. */
+  versioned: string;
+  alias: string;
+}
+
+/**
+ * Picks the staged build to promote from the release's assets: `build`, or the newest. Refuses a build that is not
+ * newer than every build in the live stable feed (`liveIndex`, undefined when the release has none yet), and one
+ * whose staged feed index, full package or versioned installer is not on the release.
+ */
+export function windowsPromotion(
+  windows: WindowsConfig,
+  assets: string[],
+  liveIndex: string | undefined,
+  build?: string,
+): WindowsPromotion {
+  if (build !== undefined && !/^\d+$/.test(build)) throw new Error(`--build ${build} is not a build number`);
+  const prefix = `${windows.packId}-`;
+  const staged = new Map<string, { asset: string; name: string }[]>();
+  for (const asset of assets) {
+    const match = asset.startsWith(prefix) ? /^(\d+)-staged-(.+)$/.exec(asset.slice(prefix.length)) : null;
+    if (!match?.[1] || !match[2]) continue;
+    staged.set(match[1], [...(staged.get(match[1]) ?? []), { asset, name: match[2] }]);
+  }
+  const chosen = build ?? [...staged.keys()].sort((a, b) => (BigInt(b) > BigInt(a) ? 1 : -1))[0];
+  const { tag } = windows.release;
+  if (chosen === undefined) throw new NothingToPromoteError(`the ${tag} release has no staged build to promote`);
+  const files = staged.get(chosen);
+  if (!files) throw new Error(`the ${tag} release has no staged files for build ${chosen}`);
+  const index = feedIndex(windows.channel);
+  if (liveIndex !== undefined) {
+    const live = feedBuild(liveIndex);
+    if (live === undefined)
+      throw new Error(
+        `the live ${index} names no <version>-build.<build> version, so promote can't tell what it holds`,
+      );
+    if (BigInt(chosen) <= live)
+      throw new NothingToPromoteError(
+        `build ${chosen} is not newer than ${live} on the ${windows.channel} channel; nothing newer than the ${windows.channel} channel to promote`,
+      );
+  }
+  if (!files.some((file) => file.name === index))
+    throw new Error(`build ${chosen} has no ${stagedName(windows, chosen, index)} on the ${tag} release`);
+  const arch = windows.runtime.slice("win-".length);
+  const suffix = `-${chosen}-${arch}-setup.exe`;
+  const versioned = assets.find(
+    (asset) =>
+      asset.startsWith(prefix) &&
+      asset.endsWith(suffix) &&
+      /^\d+\.\d+\.\d+$/.test(asset.slice(prefix.length, -suffix.length)),
+  );
+  if (!versioned) throw new Error(`build ${chosen} has no ${prefix}<version>${suffix} installer on the ${tag} release`);
+  const version = versioned.slice(prefix.length, -suffix.length);
+  const names = installerNames(windows, version, chosen);
+  const nupkg = fullPackageName(windows, version, chosen, windows.channel);
+  if (!assets.includes(nupkg)) throw new Error(`build ${chosen} has no ${nupkg} on the ${tag} release`);
+  return { build: chosen, version, staged: files, versioned, alias: names.alias };
+}
+
+/**
+ * What `ship promote windows` uploads: the stable installer name first, then the staged feed files under their
+ * stable names, and the feed index installed copies read last, so a failed upload leaves the stable channel as it
+ * was and a second promote retries it.
+ */
+export function promoteUploads(release: WindowsRelease, channel: string, alias: string, feed: string[]): string[][] {
+  const index = feed.filter((file) => basename(file) === feedIndex(channel));
+  const rest = feed.filter((file) => basename(file) !== feedIndex(channel));
+  return [
+    releaseUpload(release, [alias]),
+    ...(rest.length ? [releaseUpload(release, rest.sort())] : []),
+    releaseUpload(release, index),
+  ];
 }
 
 /** The id of the listed run whose name carries `dispatchId`, from `gh run list --json databaseId,displayTitle`. */
