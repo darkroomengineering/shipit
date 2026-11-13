@@ -83,6 +83,19 @@ describe("ship promote mac", () => {
     ]);
   });
 
+  test("promote takes and releases the lock and runs the same steps for mac, the default platform", async () => {
+    const { dir, downloaded, config, options } = setup(feed(entry("7", "beta"), entry("5")));
+    const runner = recorder();
+    await promote(config, { ...options, dry: false, runner });
+    expect(downloaded).toEqual([`${PREFIX}Demo-7.dmg`]);
+    expect(runner.calls).toEqual([
+      `gh release upload rolling ${dir}/appcast.xml --repo acme/demo --clobber`,
+      `gh release upload rolling ${dir}/alias/Demo.dmg --repo acme/demo --clobber`,
+    ]);
+    // The lock is released, so a second run can take it.
+    await promote(config, { ...options, platform: "mac", dry: false, runner: recorder(), build: "7" });
+  });
+
   test("--build promotes that build", async () => {
     const { dir, downloaded, config, options } = setup(feed(entry("7", "beta"), entry("6", "beta"), entry("5")));
     await runPromote(config, { ...options, dry: false, runner: recorder(), build: "6" });
@@ -162,6 +175,15 @@ describe("ship release's mac step", () => {
     await expect(releaseMac(config, { ...options, dry: false, runner: recorder() })).rejects.toThrow(
       "signed feeds can't be promoted yet",
     );
+  });
+
+  test("a dry run warns about a refusal instead of failing, and uploads nothing", async () => {
+    const signed = `${feed(entry("7", "beta"), entry("5"))}<!-- sparkle-signatures:\nedSignature: x\n-->\n`;
+    const { downloaded, config, options } = setup(signed);
+    const runner = recorder();
+    await releaseMac(config, { ...options, dry: true, runner });
+    expect(downloaded).toEqual([]);
+    expect(runner.calls).toEqual([]);
   });
 
   test("promotes nothing after --skip-upload, or for an app without betaChannel", async () => {
